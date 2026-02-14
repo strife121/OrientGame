@@ -18,6 +18,7 @@
     btnNewMap: document.getElementById("btnNewMap"),
     btnNewLeg: document.getElementById("btnNewLeg"),
     btnStart: document.getElementById("btnStart"),
+    btnMap: document.getElementById("btnMap"),
     compassCheck: document.getElementById("compassCheck"),
     fullscreenCheck: document.getElementById("fullscreenCheck"),
     playersList: document.getElementById("playersList"),
@@ -43,6 +44,7 @@
     legSeed: null,
     serverOffsetMs: 0,
     localFinished: false,
+    mapViewOpen: false,
   };
 
   const savedName = localStorage.getItem("orient_player_name");
@@ -95,6 +97,13 @@
       return;
     }
     state.socket.emit("start_race");
+  });
+
+  ui.btnMap.addEventListener("click", () => {
+    if (state.phase !== "running") {
+      return;
+    }
+    setMapViewOpen(!state.mapViewOpen);
   });
 
   ui.nameInput.addEventListener("change", () => {
@@ -861,16 +870,18 @@
       DrawControl(ctx, mDstNode.center.x, mDstNode.center.y, -mViewR);
     }
 
-    if (!mAtStart) {
+    if (!mAtStart || (state.phase === "running" && mMenu)) {
       let rad = mMenu ? 5 : 2;
+      let dotX = mAtStart ? mDotNode.center.x : mDotPos.x;
+      let dotY = mAtStart ? mDotNode.center.y : mDotPos.y;
       ctx.fillStyle = "rgb(128,0,0)";
       ctx.beginPath();
-      ctx.arc(mDotPos.x, mDotPos.y, rad, 0, Math.PI * 2, false);
+      ctx.arc(dotX, dotY, rad, 0, Math.PI * 2, false);
       ctx.fill();
       ctx.strokeStyle = "rgb(0,0,0)";
       ctx.lineWidth = mMenu ? 1 : 0.25;
       ctx.beginPath();
-      ctx.arc(mDotPos.x, mDotPos.y, rad, 0, Math.PI * 2, false);
+      ctx.arc(dotX, dotY, rad, 0, Math.PI * 2, false);
       ctx.stroke();
     }
 
@@ -933,6 +944,31 @@
   function SetMenuVis(menu) {
     mMenu = menu;
     canvas.style.background = mMenu ? "white" : "rgb(200,200,255)";
+  }
+
+  function setMapViewOpen(shouldOpen) {
+    if (state.phase !== "running") {
+      state.mapViewOpen = false;
+      SetMenuVis(true);
+      renderUi();
+      return;
+    }
+
+    state.mapViewOpen = Boolean(shouldOpen);
+    if (state.mapViewOpen) {
+      // Match original stop/menu behavior: open overview map and pause automatic movement.
+      mMoving = false;
+      mCenterView = true;
+      SetMenuVis(true);
+    } else {
+      MoveViewToDot();
+      mViewR = 0;
+      mDotAng = 0;
+      mCenterView = false;
+      SetMenuVis(false);
+    }
+
+    renderUi();
   }
 
   function WindowResize() {
@@ -1132,6 +1168,7 @@
     }
 
     if (state.phase === "running" && previousPhase !== "running") {
+      state.mapViewOpen = false;
       InitDot((state.legSeed || 1) + 1);
       MoveViewToDot();
       mViewR = 0;
@@ -1140,12 +1177,14 @@
     }
 
     if (state.phase !== "running" && previousPhase === "running") {
+      state.mapViewOpen = false;
       mMoving = false;
       mCenterView = true;
       SetMenuVis(true);
     }
 
     if (state.phase !== "running" && previousPhase !== "running") {
+      state.mapViewOpen = false;
       SetMenuVis(true);
     }
 
@@ -1175,6 +1214,14 @@
     ui.btnStart.disabled = disabled || state.phase === "running";
     ui.btnNewMap.disabled = disabled || state.phase === "running";
     ui.btnNewLeg.disabled = disabled || state.phase === "running";
+    ui.btnMap.disabled = disabled || state.phase !== "running";
+
+    const running = state.phase === "running";
+    ui.btnNewMap.classList.toggle("hidden", running);
+    ui.btnNewLeg.classList.toggle("hidden", running);
+    ui.btnStart.classList.toggle("hidden", running);
+    ui.btnMap.classList.toggle("hidden", !running);
+    ui.btnMap.textContent = state.mapViewOpen ? "BACK" : "MAP";
 
     renderPlayers();
     renderResults();
