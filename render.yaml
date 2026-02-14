@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: orientgame
+    runtime: node
+    plan: free
+    autoDeploy: true
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ACCESS_TOKEN
+        sync: false

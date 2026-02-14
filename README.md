@@ -68,6 +68,15 @@ ACCESS_TOKEN=mysecret npm run start
 - задать `ACCESS_TOKEN` для приватной ссылки;
 - использовать HTTPS в проде.
 
+### Деплой через Blueprint (`render.yaml`)
+
+В репозитории есть `render.yaml`, поэтому можно создавать сервис через Blueprint:
+
+1. В Render нажми `New +` -> `Blueprint`.
+2. Выбери репозиторий `strife121/OrientGame`.
+3. Подтверди создание сервиса.
+4. После создания в переменных окружения задай `ACCESS_TOKEN` (секрет для приватной ссылки).
+
 ### Полезные официальные ссылки
 
 - Render: deploy Node.js/Express app  
