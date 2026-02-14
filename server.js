@@ -7,12 +7,14 @@ const { Server } = require("socket.io");
 const PORT = Number(process.env.PORT || 3000);
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const ACCESS_COOKIE = "orient_access";
+const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 180000);
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
 const rooms = new Map();
+const disconnectTimers = new Map();
 
 function parseCookies(cookieHeader = "") {
   return cookieHeader
@@ -25,7 +27,12 @@ function parseCookies(cookieHeader = "") {
         return acc;
       }
       const key = part.slice(0, idx);
-      const val = decodeURIComponent(part.slice(idx + 1));
+      let val = part.slice(idx + 1);
+      try {
+        val = decodeURIComponent(val);
+      } catch {
+        // Keep raw value when URI decoding fails.
+      }
       acc[key] = val;
       return acc;
     }, {});
@@ -48,8 +55,20 @@ function normalizeRoomId(roomId) {
     .slice(0, 24);
 }
 
+function normalizePlayerKey(playerKey) {
+  return (playerKey || "")
+    .toString()
+    .trim()
+    .replace(/[^a-zA-Z0-9_-]/g, "")
+    .slice(0, 64);
+}
+
 function generateRoomId() {
   return crypto.randomBytes(3).toString("hex").toUpperCase();
+}
+
+function generatePlayerKey() {
+  return crypto.randomBytes(16).toString("hex");
 }
 
 function randomSeed() {
@@ -76,16 +95,25 @@ function clearFinishes(room) {
   }
 }
 
-function allFinished(room) {
-  if (room.players.size === 0) {
-    return false;
-  }
+function clearProgress(room) {
   for (const player of room.players.values()) {
+    player.progress = null;
+  }
+}
+
+function allFinished(room) {
+  let activePlayers = 0;
+  for (const player of room.players.values()) {
+    const inRace = player.connected || player.finishedMs !== null;
+    if (!inRace) {
+      continue;
+    }
+    activePlayers += 1;
     if (player.finishedMs === null) {
       return false;
     }
   }
-  return true;
+  return activePlayers > 0;
 }
 
 function serializeRoom(room) {
@@ -119,6 +147,7 @@ function serializeRoom(room) {
       joinedAt: player.joinedAt,
       finishRank: player.finishRank,
       finishedMs: player.finishedMs,
+      connected: player.connected,
     })),
     results,
   };
@@ -128,8 +157,33 @@ function broadcastRoom(room) {
   io.to(room.id).emit("room_state", serializeRoom(room));
 }
 
+function timerKey(roomId, playerId) {
+  return `${roomId}:${playerId}`;
+}
+
+function clearDisconnectTimer(roomId, playerId) {
+  const key = timerKey(roomId, playerId);
+  const timer = disconnectTimers.get(key);
+  if (!timer) {
+    return;
+  }
+  clearTimeout(timer);
+  disconnectTimers.delete(key);
+}
+
+function clearRoomTimers(roomId) {
+  const prefix = `${roomId}:`;
+  for (const [key, timer] of disconnectTimers.entries()) {
+    if (key.startsWith(prefix)) {
+      clearTimeout(timer);
+      disconnectTimers.delete(key);
+    }
+  }
+}
+
 function deleteRoomIfEmpty(room) {
   if (room.players.size === 0) {
+    clearRoomTimers(room.id);
     rooms.delete(room.id);
     return true;
   }
@@ -137,15 +191,25 @@ function deleteRoomIfEmpty(room) {
 }
 
 function updateLeader(room) {
-  if (room.leaderId && room.players.has(room.leaderId)) {
-    return;
+  if (room.leaderId) {
+    const current = room.players.get(room.leaderId);
+    if (current && current.connected) {
+      return;
+    }
   }
-  const nextLeader = [...room.players.values()].sort((a, b) => a.joinedAt - b.joinedAt)[0];
+
+  const connected = [...room.players.values()]
+    .filter((player) => player.connected)
+    .sort((a, b) => a.joinedAt - b.joinedAt);
+  const ordered = [...room.players.values()].sort((a, b) => a.joinedAt - b.joinedAt);
+
+  const nextLeader = connected[0] || ordered[0];
   room.leaderId = nextLeader ? nextLeader.id : null;
 }
 
-function removePlayerFromRoom(room, socketId, shouldBroadcast = true) {
-  const removed = room.players.delete(socketId);
+function removePlayerImmediately(room, playerId, shouldBroadcast = true) {
+  clearDisconnectTimer(room.id, playerId);
+  const removed = room.players.delete(playerId);
   if (!removed) {
     return;
   }
@@ -165,12 +229,122 @@ function removePlayerFromRoom(room, socketId, shouldBroadcast = true) {
   }
 }
 
+function scheduleDisconnectCleanup(room, playerId) {
+  clearDisconnectTimer(room.id, playerId);
+  const key = timerKey(room.id, playerId);
+
+  const timer = setTimeout(() => {
+    disconnectTimers.delete(key);
+
+    const liveRoom = rooms.get(room.id);
+    if (!liveRoom) {
+      return;
+    }
+
+    const player = liveRoom.players.get(playerId);
+    if (!player || player.connected) {
+      return;
+    }
+
+    liveRoom.players.delete(playerId);
+    updateLeader(liveRoom);
+
+    if (liveRoom.phase === "running" && allFinished(liveRoom)) {
+      liveRoom.phase = "finished";
+    }
+
+    if (deleteRoomIfEmpty(liveRoom)) {
+      return;
+    }
+
+    broadcastRoom(liveRoom);
+  }, DISCONNECT_GRACE_MS);
+
+  if (typeof timer.unref === "function") {
+    timer.unref();
+  }
+
+  disconnectTimers.set(key, timer);
+}
+
+function clampNumber(input, min, max, fallback) {
+  const n = Number(input);
+  if (!Number.isFinite(n)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, n));
+}
+
+function clampInt(input, min, max, fallback) {
+  return Math.floor(clampNumber(input, min, max, fallback));
+}
+
+function sanitizeProgress(progress) {
+  if (!progress || typeof progress !== "object") {
+    return null;
+  }
+
+  const mapSeed = Number(progress.mapSeed);
+  const legSeed = Number(progress.legSeed);
+  if (!Number.isFinite(mapSeed) || !Number.isFinite(legSeed)) {
+    return null;
+  }
+
+  const route = Array.isArray(progress.route)
+    ? progress.route
+        .slice(-1200)
+        .map((segment) => {
+          if (!segment || typeof segment !== "object") {
+            return null;
+          }
+          return {
+            nodeIdx: clampInt(segment.nodeIdx, 0, 10000, 0),
+            from: clampInt(segment.from, 0, 3, 0),
+            to: clampInt(segment.to, 0, 3, 0),
+          };
+        })
+        .filter(Boolean)
+    : [];
+
+  return {
+    mapSeed: Math.floor(mapSeed),
+    legSeed: Math.floor(legSeed),
+    startedAt: Number.isFinite(Number(progress.startedAt)) ? Math.floor(Number(progress.startedAt)) : null,
+    dotNodeIdx: clampInt(progress.dotNodeIdx, 0, 10000, 0),
+    dotFrom: clampInt(progress.dotFrom, 0, 3, 0),
+    dotTo: clampInt(progress.dotTo, 0, 3, 0),
+    dotI: clampNumber(progress.dotI, 0, 1, 0.5),
+    atStart: Boolean(progress.atStart),
+    moving: Boolean(progress.moving),
+    route,
+    updatedAt: Date.now(),
+  };
+}
+
 function getRoomForSocket(socket) {
   const roomId = socket.data.roomId;
   if (!roomId) {
     return null;
   }
   return rooms.get(roomId) || null;
+}
+
+function getPlayerForSocket(socket, room) {
+  const playerId = socket.data.playerId;
+  if (!playerId) {
+    return null;
+  }
+
+  const player = room.players.get(playerId);
+  if (!player) {
+    return null;
+  }
+
+  if (player.socketId !== socket.id) {
+    return null;
+  }
+
+  return player;
 }
 
 function withJoinedRoom(socket, callback) {
@@ -238,13 +412,16 @@ io.on("connection", (socket) => {
   socket.on("join_room", (payload, ack) => {
     const roomId = normalizeRoomId(payload?.roomId) || generateRoomId();
     const name = sanitizeName(payload?.name);
-    const previousRoomId = socket.data.roomId;
+    const playerId = normalizePlayerKey(payload?.playerKey) || generatePlayerKey();
 
-    if (previousRoomId && previousRoomId !== roomId) {
+    const previousRoomId = socket.data.roomId;
+    const previousPlayerId = socket.data.playerId;
+
+    if (previousRoomId && (previousRoomId !== roomId || previousPlayerId !== playerId)) {
       const previousRoom = rooms.get(previousRoomId);
       socket.leave(previousRoomId);
-      if (previousRoom) {
-        removePlayerFromRoom(previousRoom, socket.id, true);
+      if (previousRoom && previousPlayerId) {
+        removePlayerImmediately(previousRoom, previousPlayerId, true);
       }
     }
 
@@ -256,32 +433,42 @@ io.on("connection", (socket) => {
 
     socket.join(roomId);
     socket.data.roomId = roomId;
+    socket.data.playerId = playerId;
 
-    const existing = room.players.get(socket.id);
-    if (existing) {
-      existing.name = name;
+    let player = room.players.get(playerId);
+    if (player) {
+      player.name = name;
+      player.socketId = socket.id;
+      player.connected = true;
+      player.disconnectedAt = null;
     } else {
-      room.players.set(socket.id, {
-        id: socket.id,
+      player = {
+        id: playerId,
         name,
         joinedAt: Date.now(),
         finishedMs: null,
         finishRank: null,
-      });
+        progress: null,
+        socketId: socket.id,
+        connected: true,
+        disconnectedAt: null,
+      };
+      room.players.set(playerId, player);
     }
 
+    clearDisconnectTimer(roomId, playerId);
     updateLeader(room);
     broadcastRoom(room);
 
     if (typeof ack === "function") {
-      ack({ ok: true, roomId, playerId: socket.id });
+      ack({ ok: true, roomId, playerId, progress: player.progress });
     }
   });
 
   socket.on("update_name", (payload) => {
     const name = sanitizeName(payload?.name);
     withJoinedRoom(socket, (room) => {
-      const player = room.players.get(socket.id);
+      const player = getPlayerForSocket(socket, room);
       if (!player) {
         return;
       }
@@ -297,6 +484,7 @@ io.on("connection", (socket) => {
       room.phase = "lobby";
       room.startedAt = null;
       clearFinishes(room);
+      clearProgress(room);
       broadcastRoom(room);
     });
   });
@@ -307,6 +495,7 @@ io.on("connection", (socket) => {
       room.phase = "lobby";
       room.startedAt = null;
       clearFinishes(room);
+      clearProgress(room);
       broadcastRoom(room);
     });
   });
@@ -316,7 +505,36 @@ io.on("connection", (socket) => {
       room.phase = "running";
       room.startedAt = Date.now();
       clearFinishes(room);
+      clearProgress(room);
       broadcastRoom(room);
+    });
+  });
+
+  socket.on("progress_update", (payload) => {
+    withJoinedRoom(socket, (room) => {
+      if (room.phase !== "running") {
+        return;
+      }
+
+      const player = getPlayerForSocket(socket, room);
+      if (!player || player.finishedMs !== null) {
+        return;
+      }
+
+      const progress = sanitizeProgress(payload);
+      if (!progress) {
+        return;
+      }
+
+      if (progress.mapSeed !== room.mapSeed || progress.legSeed !== room.legSeed) {
+        return;
+      }
+
+      if (!room.startedAt || progress.startedAt !== room.startedAt) {
+        return;
+      }
+
+      player.progress = progress;
     });
   });
 
@@ -326,13 +544,14 @@ io.on("connection", (socket) => {
         return;
       }
 
-      const player = room.players.get(socket.id);
+      const player = getPlayerForSocket(socket, room);
       if (!player || player.finishedMs !== null) {
         return;
       }
 
       player.finishedMs = Math.max(0, Date.now() - room.startedAt);
       player.finishRank = 1 + [...room.players.values()].filter((entry) => entry.finishRank !== null).length;
+      player.progress = null;
 
       if (allFinished(room)) {
         room.phase = "finished";
@@ -347,7 +566,23 @@ io.on("connection", (socket) => {
     if (!room) {
       return;
     }
-    removePlayerFromRoom(room, socket.id, true);
+
+    const player = getPlayerForSocket(socket, room);
+    if (!player) {
+      return;
+    }
+
+    player.connected = false;
+    player.socketId = null;
+    player.disconnectedAt = Date.now();
+
+    if (room.phase === "running" && allFinished(room)) {
+      room.phase = "finished";
+    }
+
+    scheduleDisconnectCleanup(room, player.id);
+    updateLeader(room);
+    broadcastRoom(room);
   });
 });
 

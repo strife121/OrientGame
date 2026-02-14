@@ -20,7 +20,6 @@
     btnStart: document.getElementById("btnStart"),
     btnMap: document.getElementById("btnMap"),
     compassCheck: document.getElementById("compassCheck"),
-    fullscreenCheck: document.getElementById("fullscreenCheck"),
     playersList: document.getElementById("playersList"),
     resultsBody: document.getElementById("resultsBody"),
     timerBadge: document.getElementById("timerBadge"),
@@ -45,7 +44,12 @@
     serverOffsetMs: 0,
     localFinished: false,
     mapViewOpen: false,
+    resumeProgress: null,
   };
+
+  const savedPlayerKey = normalizePlayerKey(localStorage.getItem("orient_player_key") || "");
+  state.playerId = savedPlayerKey || generatePlayerKey();
+  localStorage.setItem("orient_player_key", state.playerId);
 
   const savedName = localStorage.getItem("orient_player_name");
   ui.nameInput.value = sanitizeName(savedName || "") || `Runner ${Math.floor(Math.random() * 900 + 100)}`;
@@ -82,6 +86,7 @@
     if (!canSendRoomEvent()) {
       return;
     }
+    clearLocalProgress(state.roomId);
     state.socket.emit("new_map");
   });
 
@@ -89,6 +94,7 @@
     if (!canSendRoomEvent()) {
       return;
     }
+    clearLocalProgress(state.roomId);
     state.socket.emit("new_leg");
   });
 
@@ -96,6 +102,7 @@
     if (!canSendRoomEvent()) {
       return;
     }
+    clearLocalProgress(state.roomId);
     state.socket.emit("start_race");
   });
 
@@ -118,11 +125,6 @@
 
   ui.compassCheck.addEventListener("change", () => {
     mShowCompass = Boolean(ui.compassCheck.checked);
-  });
-
-  ui.fullscreenCheck.addEventListener("change", () => {
-    mFullscreen = Boolean(ui.fullscreenCheck.checked);
-    WindowResize();
   });
 
   let canvas = ui.canvas;
@@ -152,7 +154,8 @@
   let mCenterView = true;
   let mShowCompass = false;
   let mLastFrameTime = performance.now();
-  let mFullscreen = true;
+  let mNodeIndexMap = new Map();
+  let mLastProgressPushAt = 0;
 
   let randomSource = Math.random;
 
@@ -670,6 +673,11 @@
           }
         }
       }
+
+      mNodeIndexMap = new Map();
+      for (let idx = 0; idx < mMapNodes.length; idx += 1) {
+        mNodeIndexMap.set(mMapNodes[idx], idx);
+      }
     });
   }
 
@@ -977,8 +985,8 @@
     const maxW = Math.max(240, Math.floor(rect.width));
     const maxH = Math.max(240, Math.floor(rect.height));
 
-    canvas.width = ctxWidth = mFullscreen ? maxW : Math.min(600, maxW);
-    canvas.height = ctxHeight = mFullscreen ? maxH : Math.min(600, maxH);
+    canvas.width = ctxWidth = maxW;
+    canvas.height = ctxHeight = maxH;
   }
 
   function gameLoop(now) {
@@ -989,12 +997,16 @@
     Update(Number.isFinite(dt) ? dt : 0.016);
     DrawMap();
     refreshTimer();
+    maybePushProgress(false);
 
     requestAnimationFrame(gameLoop);
   }
 
   canvas.addEventListener("mousedown", CanvasMouseDown, false);
   canvas.addEventListener("touchstart", CanvasTouchDown, { passive: false });
+  window.addEventListener("beforeunload", () => {
+    maybePushProgress(true);
+  });
   window.addEventListener("resize", WindowResize);
   WindowResize();
   requestAnimationFrame(gameLoop);
@@ -1041,6 +1053,191 @@
     return code;
   }
 
+  function normalizePlayerKey(playerKey) {
+    return (playerKey || "")
+      .toString()
+      .trim()
+      .replace(/[^a-zA-Z0-9_-]/g, "")
+      .slice(0, 64);
+  }
+
+  function generatePlayerKey() {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  function progressStorageKey(roomId) {
+    return `orient_progress_${roomId}`;
+  }
+
+  function saveLocalProgress(snapshot) {
+    if (!state.roomId || !snapshot) {
+      return;
+    }
+    try {
+      localStorage.setItem(progressStorageKey(state.roomId), JSON.stringify(snapshot));
+    } catch (_err) {
+      // Ignore storage quota errors.
+    }
+  }
+
+  function loadLocalProgress(roomId) {
+    if (!roomId) {
+      return null;
+    }
+    try {
+      const raw = localStorage.getItem(progressStorageKey(roomId));
+      if (!raw) {
+        return null;
+      }
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (_err) {
+      return null;
+    }
+  }
+
+  function clearLocalProgress(roomId) {
+    if (!roomId) {
+      return;
+    }
+    try {
+      localStorage.removeItem(progressStorageKey(roomId));
+    } catch (_err) {
+      // Ignore storage errors.
+    }
+  }
+
+  function clampNumber(n, min, max, fallback) {
+    const value = Number(n);
+    if (!Number.isFinite(value)) {
+      return fallback;
+    }
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function clampInt(n, min, max, fallback) {
+    return Math.floor(clampNumber(n, min, max, fallback));
+  }
+
+  function buildProgressSnapshot() {
+    if (!mDotNode || !state.roomId || state.phase !== "running") {
+      return null;
+    }
+
+    const dotNodeIdx = mNodeIndexMap.get(mDotNode);
+    if (!Number.isInteger(dotNodeIdx)) {
+      return null;
+    }
+
+    const route = mRouteNodes
+      .slice(-1200)
+      .map((node) => {
+        const nodeIdx = mNodeIndexMap.get(node.mNode);
+        if (!Number.isInteger(nodeIdx)) {
+          return null;
+        }
+        return {
+          nodeIdx,
+          from: node.mFrom,
+          to: node.mTo,
+        };
+      })
+      .filter(Boolean);
+
+    return {
+      mapSeed: state.mapSeed,
+      legSeed: state.legSeed,
+      startedAt: state.startedAt,
+      dotNodeIdx,
+      dotFrom: mDotFrom,
+      dotTo: mDotTo,
+      dotI: mDotI,
+      atStart: mAtStart,
+      moving: mMoving,
+      route,
+      savedAt: Date.now(),
+    };
+  }
+
+  function applyProgressSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") {
+      return false;
+    }
+
+    if (snapshot.mapSeed !== state.mapSeed || snapshot.legSeed !== state.legSeed) {
+      return false;
+    }
+
+    if (!state.startedAt || snapshot.startedAt !== state.startedAt) {
+      return false;
+    }
+
+    const nodeIdx = clampInt(snapshot.dotNodeIdx, 0, mMapNodes.length - 1, -1);
+    if (nodeIdx < 0 || !mMapNodes[nodeIdx]) {
+      return false;
+    }
+
+    mDotNode = mMapNodes[nodeIdx];
+    mDotFrom = clampInt(snapshot.dotFrom, 0, 3, 0);
+    mDotTo = clampInt(snapshot.dotTo, 0, 3, 0);
+    mDotI = clampNumber(snapshot.dotI, 0, 1, 0.5);
+    mAtStart = Boolean(snapshot.atStart);
+    mMoving = false;
+    mCenterView = true;
+
+    if (!mDotNode.neighbors[mDotFrom]) {
+      mDotFrom = mDotNode.GetValidNeighborIdx(1);
+    }
+    if (!mDotNode.neighbors[mDotTo] || mDotTo === mDotFrom) {
+      mDotTo = mDotNode.GetValidNeighborIdx(1);
+      if (mDotTo === mDotFrom) {
+        mDotTo = mDotNode.GetValidNeighborIdx(2);
+      }
+    }
+
+    mRouteNodes.length = 0;
+    if (Array.isArray(snapshot.route)) {
+      for (const segment of snapshot.route.slice(-1200)) {
+        const routeNodeIdx = clampInt(segment?.nodeIdx, 0, mMapNodes.length - 1, -1);
+        if (routeNodeIdx < 0 || !mMapNodes[routeNodeIdx]) {
+          continue;
+        }
+        const from = clampInt(segment.from, 0, 3, 0);
+        const to = clampInt(segment.to, 0, 3, 0);
+        mRouteNodes.push(new RouteNode(mMapNodes[routeNodeIdx], from, to));
+      }
+    }
+
+    mDotNode.UpdateDotPos();
+    return true;
+  }
+
+  function maybePushProgress(force) {
+    if (state.phase !== "running" || !state.roomId || !state.startedAt || !mDotNode || state.localFinished) {
+      return;
+    }
+
+    const now = performance.now();
+    if (!force && now - mLastProgressPushAt < 500) {
+      return;
+    }
+
+    const snapshot = buildProgressSnapshot();
+    if (!snapshot) {
+      return;
+    }
+
+    saveLocalProgress(snapshot);
+
+    if (state.socket && state.connected) {
+      state.socket.emit("progress_update", snapshot);
+    }
+
+    mLastProgressPushAt = now;
+  }
+
   function buildInviteLink(roomId) {
     const url = new URL(window.location.href);
     url.searchParams.set("room", roomId);
@@ -1069,7 +1266,6 @@
 
     state.socket.on("connect", () => {
       state.connected = true;
-      state.playerId = state.socket.id;
       setStatus("Подключено к серверу");
       if (state.pendingRoomId) {
         emitJoin();
@@ -1102,14 +1298,17 @@
       {
         roomId: state.pendingRoomId,
         name: state.playerName,
+        playerKey: state.playerId,
       },
       (ack) => {
         if (!ack || !ack.ok) {
           setStatus("Не удалось войти в комнату");
           return;
         }
-        state.playerId = ack.playerId;
+        state.playerId = normalizePlayerKey(ack.playerId || state.playerId);
+        localStorage.setItem("orient_player_key", state.playerId);
         state.roomId = ack.roomId;
+        state.resumeProgress = ack.progress || loadLocalProgress(state.roomId);
         updateUrl(state.roomId);
         setStatus(`Комната ${state.roomId}`);
         renderUi();
@@ -1122,6 +1321,7 @@
     const name = sanitizeName(ui.nameInput.value);
 
     state.pendingRoomId = normalizedRoom || generateRoomCode();
+    state.resumeProgress = null;
     state.playerName = name || `Runner ${Math.floor(Math.random() * 900 + 100)}`;
 
     ui.roomInput.value = state.pendingRoomId;
@@ -1148,6 +1348,7 @@
     const previousLegSeed = state.legSeed;
 
     state.roomId = payload.roomId;
+    state.pendingRoomId = payload.roomId;
     state.leaderId = payload.leaderId || "";
     state.players = Array.isArray(payload.players) ? payload.players : [];
     state.results = Array.isArray(payload.results) ? payload.results : [];
@@ -1163,18 +1364,34 @@
     const localPlayer = state.players.find((player) => player.id === state.playerId);
     state.localFinished = Boolean(localPlayer && localPlayer.finishedMs !== null);
 
-    if (state.mapSeed !== previousMapSeed || state.legSeed !== previousLegSeed || mMapNodes.length === 0) {
+    const mapChanged = state.mapSeed !== previousMapSeed || state.legSeed !== previousLegSeed;
+    if (mapChanged || mMapNodes.length === 0) {
       BuildMap(state.mapSeed || 1);
       InitCourse(state.legSeed || 1);
+      const hadPreviousSeeds = previousMapSeed !== null && previousLegSeed !== null;
+      if (hadPreviousSeeds) {
+        clearLocalProgress(state.roomId);
+      }
     }
 
     if (state.phase === "running" && previousPhase !== "running") {
       state.mapViewOpen = false;
-      InitDot((state.legSeed || 1) + 1);
+      let restored = false;
+      if (state.resumeProgress) {
+        restored = applyProgressSnapshot(state.resumeProgress);
+      }
+      if (!restored) {
+        restored = applyProgressSnapshot(loadLocalProgress(state.roomId));
+      }
+      if (!restored) {
+        InitDot((state.legSeed || 1) + 1);
+      }
       MoveViewToDot();
       mViewR = 0;
       mDotAng = 0;
       SetMenuVis(false);
+      mLastProgressPushAt = 0;
+      state.resumeProgress = null;
     }
 
     if (state.phase !== "running" && previousPhase === "running") {
@@ -1182,6 +1399,8 @@
       mMoving = false;
       mCenterView = true;
       SetMenuVis(true);
+      clearLocalProgress(state.roomId);
+      state.resumeProgress = null;
     }
 
     if (state.phase !== "running" && previousPhase !== "running") {
@@ -1239,6 +1458,8 @@
       }
       if (player.finishedMs !== null) {
         parts.push(`- финиш ${formatMs(player.finishedMs)}`);
+      } else if (player.connected === false) {
+        parts.push("- переподключение...");
       } else if (state.phase === "running") {
         parts.push("- на дистанции");
       } else {
