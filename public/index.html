@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex,nofollow,noarchive" />
+    <title>Ski-O Map Memory Multiplayer</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="layout">
+      <section class="sidebar">
+        <h1>Ski-O Memory MP</h1>
+        <p class="subtitle">Одинаковая карта и дистанция для всех игроков в комнате.</p>
+
+        <div id="status" class="status">Не подключено</div>
+
+        <div id="joinPanel" class="panel">
+          <label class="label" for="nameInput">Имя</label>
+          <input id="nameInput" class="input" maxlength="24" />
+
+          <label class="label" for="roomInput">Комната</label>
+          <input id="roomInput" class="input" maxlength="24" placeholder="например, AB12CD" />
+
+          <div class="row">
+            <button id="createRoomBtn" class="btn">Создать</button>
+            <button id="joinRoomBtn" class="btn btn-alt">Войти</button>
+          </div>
+        </div>
+
+        <div id="roomPanel" class="panel hidden">
+          <div class="row row-tight">
+            <div>Комната: <strong id="roomCode">-</strong></div>
+            <button id="copyLinkBtn" class="btn btn-small">Копировать ссылку</button>
+          </div>
+
+          <div class="row row-tight">
+            <button id="btnNewMap" class="btn btn-small">Новая карта</button>
+            <button id="btnNewLeg" class="btn btn-small">Новая нога</button>
+            <button id="btnStart" class="btn btn-small">Старт</button>
+          </div>
+
+          <label class="checkbox">
+            <input id="compassCheck" type="checkbox" />
+            Компас
+          </label>
+
+          <label class="checkbox">
+            <input id="fullscreenCheck" type="checkbox" checked />
+            Fullscreen canvas
+          </label>
+
+          <div id="timerBadge" class="timer">00:00.0</div>
+
+          <h2>Игроки</h2>
+          <ul id="playersList" class="players"></ul>
+
+          <h2>Результаты</h2>
+          <table class="results">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Игрок</th>
+                <th>Время</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="canvasWrap" class="canvas-wrap">
+        <canvas id="canvas"></canvas>
+      </section>
+    </main>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="./game.js"></script>
+  </body>
+</html>
