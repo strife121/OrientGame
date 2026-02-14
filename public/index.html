@@ -18,6 +18,13 @@
         <div id="joinPanel" class="panel">
           <label class="label" for="nameInput">Имя</label>
           <input id="nameInput" class="input" maxlength="24" />
+          <div class="row row-tight">
+            <div class="color-meta">
+              <span id="joinColorPreview" class="player-color"></span>
+              <span id="joinColorHex" class="color-hex">#000000</span>
+            </div>
+            <button id="joinRandomColorBtn" class="btn btn-small btn-alt" type="button">Случ. цвет</button>
+          </div>
 
           <label class="label" for="roomInput">Комната</label>
           <input id="roomInput" class="input" maxlength="24" placeholder="например, AB12CD" />
@@ -32,6 +39,21 @@
           <div class="row row-tight">
             <div>Комната: <strong id="roomCode">-</strong></div>
             <button id="copyLinkBtn" class="btn btn-small">Копировать ссылку</button>
+          </div>
+
+          <div class="profile-box">
+            <label class="label" for="roomNameInput">Профиль</label>
+            <div class="row">
+              <input id="roomNameInput" class="input input-compact" maxlength="24" />
+              <button id="saveNameBtn" class="btn btn-small" type="button">Имя</button>
+            </div>
+            <div class="row row-tight">
+              <div class="color-meta">
+                <span id="roomColorPreview" class="player-color"></span>
+                <span id="roomColorHex" class="color-hex">#000000</span>
+              </div>
+              <button id="roomRandomColorBtn" class="btn btn-small btn-alt" type="button">Случ. цвет</button>
+            </div>
           </div>
 
           <div class="row row-tight">

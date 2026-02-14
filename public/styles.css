@@ -130,6 +130,19 @@ h2 {
   padding: 7px 10px;
 }
 
+.profile-box {
+  margin-bottom: 10px;
+  padding: 8px;
+  border: 1px solid #d8e1f0;
+  border-radius: 8px;
+}
+
+.input-compact {
+  margin-bottom: 0;
+  flex: 1;
+  min-width: 0;
+}
+
 .checkbox {
   display: block;
   font-size: 14px;
@@ -152,6 +165,42 @@ h2 {
 
 .players li {
   margin: 4px 0;
+  list-style: none;
+  margin-left: -16px;
+}
+
+.player-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.player-color {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1px solid #1a2538;
+  display: inline-block;
+  background: #8f1f1f;
+  flex-shrink: 0;
+}
+
+.color-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.color-hex {
+  font-size: 12px;
+  color: var(--muted);
+  font-family: "Consolas", "Menlo", monospace;
+}
+
+.result-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .results {

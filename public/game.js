@@ -13,8 +13,16 @@
     roomInput: document.getElementById("roomInput"),
     createRoomBtn: document.getElementById("createRoomBtn"),
     joinRoomBtn: document.getElementById("joinRoomBtn"),
+    joinRandomColorBtn: document.getElementById("joinRandomColorBtn"),
+    joinColorPreview: document.getElementById("joinColorPreview"),
+    joinColorHex: document.getElementById("joinColorHex"),
     roomCode: document.getElementById("roomCode"),
     copyLinkBtn: document.getElementById("copyLinkBtn"),
+    roomNameInput: document.getElementById("roomNameInput"),
+    saveNameBtn: document.getElementById("saveNameBtn"),
+    roomRandomColorBtn: document.getElementById("roomRandomColorBtn"),
+    roomColorPreview: document.getElementById("roomColorPreview"),
+    roomColorHex: document.getElementById("roomColorHex"),
     btnNewMap: document.getElementById("btnNewMap"),
     btnNewLeg: document.getElementById("btnNewLeg"),
     btnStart: document.getElementById("btnStart"),
@@ -34,6 +42,7 @@
     roomId: "",
     playerId: "",
     playerName: "",
+    playerColor: "#8F1F1F",
     leaderId: "",
     players: [],
     results: [],
@@ -54,6 +63,13 @@
 
   const savedName = localStorage.getItem("orient_player_name");
   ui.nameInput.value = sanitizeName(savedName || "") || `Runner ${Math.floor(Math.random() * 900 + 100)}`;
+  state.playerName = ui.nameInput.value;
+  ui.roomNameInput.value = ui.nameInput.value;
+
+  const savedColor = normalizeHexColor(localStorage.getItem("orient_player_color") || "");
+  state.playerColor = savedColor || generateRandomColor();
+  localStorage.setItem("orient_player_color", state.playerColor);
+  updateColorPreview();
 
   const urlRoom = normalizeRoomId(queryParams.get("room") || "");
   if (urlRoom) {
@@ -115,13 +131,31 @@
   });
 
   ui.nameInput.addEventListener("change", () => {
-    const name = sanitizeName(ui.nameInput.value);
-    ui.nameInput.value = name;
-    state.playerName = name;
-    localStorage.setItem("orient_player_name", name);
-    if (state.socket && state.connected && state.roomId) {
-      state.socket.emit("update_name", { name });
+    applyPlayerName(ui.nameInput.value, true);
+  });
+
+  ui.roomNameInput.addEventListener("change", () => {
+    applyPlayerName(ui.roomNameInput.value, true);
+  });
+
+  ui.roomNameInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
     }
+    event.preventDefault();
+    applyPlayerName(ui.roomNameInput.value, true);
+  });
+
+  ui.saveNameBtn.addEventListener("click", () => {
+    applyPlayerName(ui.roomNameInput.value, true);
+  });
+
+  ui.joinRandomColorBtn.addEventListener("click", () => {
+    applyPlayerColor(generateRandomColor(), true);
+  });
+
+  ui.roomRandomColorBtn.addEventListener("click", () => {
+    applyPlayerColor(generateRandomColor(), true);
   });
 
   ui.compassCheck.addEventListener("change", () => {
@@ -883,7 +917,7 @@
       let rad = mMenu ? 5 : 2;
       let dotX = mAtStart ? mDotNode.center.x : mDotPos.x;
       let dotY = mAtStart ? mDotNode.center.y : mDotPos.y;
-      ctx.fillStyle = "rgb(128,0,0)";
+      ctx.fillStyle = state.playerColor;
       ctx.beginPath();
       ctx.arc(dotX, dotY, rad, 0, Math.PI * 2, false);
       ctx.fill();
@@ -1054,6 +1088,56 @@
       .trim()
       .replace(/\s+/g, " ")
       .slice(0, 24);
+  }
+
+  function normalizeHexColor(color) {
+    const raw = (color || "").toString().trim();
+    const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+    if (!match) {
+      return "";
+    }
+    return `#${match[1].toUpperCase()}`;
+  }
+
+  function generateRandomColor() {
+    const bytes = new Uint8Array(3);
+    window.crypto.getRandomValues(bytes);
+    const channels = [...bytes].map((value) => 40 + (value % 176));
+    return `#${channels.map((value) => value.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+  }
+
+  function applyPlayerName(nextName, emitToServer) {
+    const name = sanitizeName(nextName) || state.playerName || `Runner ${Math.floor(Math.random() * 900 + 100)}`;
+    const changed = name !== state.playerName;
+    state.playerName = name;
+    ui.nameInput.value = name;
+    ui.roomNameInput.value = name;
+    if (changed) {
+      localStorage.setItem("orient_player_name", name);
+    }
+    if (emitToServer && state.socket && state.connected && state.roomId) {
+      state.socket.emit("update_name", { name });
+    }
+  }
+
+  function updateColorPreview() {
+    ui.joinColorPreview.style.backgroundColor = state.playerColor;
+    ui.roomColorPreview.style.backgroundColor = state.playerColor;
+    ui.joinColorHex.textContent = state.playerColor;
+    ui.roomColorHex.textContent = state.playerColor;
+  }
+
+  function applyPlayerColor(nextColor, emitToServer) {
+    const color = normalizeHexColor(nextColor) || generateRandomColor();
+    const changed = color !== state.playerColor;
+    state.playerColor = color;
+    if (changed) {
+      localStorage.setItem("orient_player_color", color);
+    }
+    updateColorPreview();
+    if (emitToServer && state.socket && state.connected && state.roomId) {
+      state.socket.emit("update_color", { color });
+    }
   }
 
   function generateRoomCode() {
@@ -1313,6 +1397,7 @@
         roomId: state.pendingRoomId,
         name: state.playerName,
         playerKey: state.playerId,
+        color: state.playerColor,
       },
       (ack) => {
         if (!ack || !ack.ok) {
@@ -1321,6 +1406,9 @@
         }
         state.playerId = normalizePlayerKey(ack.playerId || state.playerId);
         localStorage.setItem("orient_player_key", state.playerId);
+        if (ack.color) {
+          applyPlayerColor(ack.color, false);
+        }
         state.roomId = ack.roomId;
         state.resumeProgress = ack.progress || loadLocalProgress(state.roomId);
         updateUrl(state.roomId);
@@ -1336,12 +1424,9 @@
 
     state.pendingRoomId = normalizedRoom || generateRoomCode();
     state.resumeProgress = null;
-    state.playerName = name || `Runner ${Math.floor(Math.random() * 900 + 100)}`;
+    applyPlayerName(name || `Runner ${Math.floor(Math.random() * 900 + 100)}`, false);
 
     ui.roomInput.value = state.pendingRoomId;
-    ui.nameInput.value = state.playerName;
-
-    localStorage.setItem("orient_player_name", state.playerName);
 
     updateUrl(state.pendingRoomId);
     ensureSocket();
@@ -1377,6 +1462,14 @@
 
     const localPlayer = state.players.find((player) => player.id === state.playerId);
     state.localFinished = Boolean(localPlayer && localPlayer.finishedMs !== null);
+    if (localPlayer) {
+      if (localPlayer.name) {
+        applyPlayerName(localPlayer.name, false);
+      }
+      if (localPlayer.color) {
+        applyPlayerColor(localPlayer.color, false);
+      }
+    }
 
     const mapChanged = state.mapSeed !== previousMapSeed || state.legSeed !== previousLegSeed;
     if (mapChanged || mMapNodes.length === 0) {
@@ -1482,7 +1575,19 @@
       } else {
         parts.push("- ожидание");
       }
-      li.textContent = parts.join(" ");
+      const row = document.createElement("span");
+      row.className = "player-row";
+
+      const swatch = document.createElement("span");
+      swatch.className = "player-color";
+      swatch.style.backgroundColor = normalizeHexColor(player.color) || "#8F1F1F";
+
+      const text = document.createElement("span");
+      text.textContent = parts.join(" ");
+
+      row.appendChild(swatch);
+      row.appendChild(text);
+      li.appendChild(row);
       ui.playersList.appendChild(li);
     }
   }
@@ -1507,7 +1612,19 @@
       rank.textContent = String(result.finishRank);
 
       const name = document.createElement("td");
-      name.textContent = result.name;
+      const nameWrap = document.createElement("span");
+      nameWrap.className = "result-name";
+
+      const swatch = document.createElement("span");
+      swatch.className = "player-color";
+      swatch.style.backgroundColor = normalizeHexColor(result.color) || "#8F1F1F";
+
+      const label = document.createElement("span");
+      label.textContent = result.name;
+
+      nameWrap.appendChild(swatch);
+      nameWrap.appendChild(label);
+      name.appendChild(nameWrap);
 
       const time = document.createElement("td");
       time.textContent = formatMs(result.finishedMs);

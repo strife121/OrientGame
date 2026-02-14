@@ -63,6 +63,23 @@ function normalizePlayerKey(playerKey) {
     .slice(0, 64);
 }
 
+function normalizeHexColor(color) {
+  const raw = (color || "").toString().trim();
+  const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
+  if (!match) {
+    return "";
+  }
+  return `#${match[1].toUpperCase()}`;
+}
+
+function generateRandomColor() {
+  // Keep colors readable on white and blue backgrounds.
+  const r = crypto.randomInt(40, 216);
+  const g = crypto.randomInt(40, 216);
+  const b = crypto.randomInt(40, 216);
+  return `#${[r, g, b].map((n) => n.toString(16).padStart(2, "0")).join("").toUpperCase()}`;
+}
+
 function generateRoomId() {
   return crypto.randomBytes(3).toString("hex").toUpperCase();
 }
@@ -131,6 +148,7 @@ function serializeRoom(room) {
       name: player.name,
       finishRank: player.finishRank,
       finishedMs: player.finishedMs,
+      color: player.color,
     }));
 
   return {
@@ -148,6 +166,7 @@ function serializeRoom(room) {
       finishRank: player.finishRank,
       finishedMs: player.finishedMs,
       connected: player.connected,
+      color: player.color,
     })),
     results,
   };
@@ -413,6 +432,7 @@ io.on("connection", (socket) => {
     const roomId = normalizeRoomId(payload?.roomId) || generateRoomId();
     const name = sanitizeName(payload?.name);
     const playerId = normalizePlayerKey(payload?.playerKey) || generatePlayerKey();
+    const color = normalizeHexColor(payload?.color);
 
     const previousRoomId = socket.data.roomId;
     const previousPlayerId = socket.data.playerId;
@@ -438,6 +458,11 @@ io.on("connection", (socket) => {
     let player = room.players.get(playerId);
     if (player) {
       player.name = name;
+      if (color) {
+        player.color = color;
+      } else if (!player.color) {
+        player.color = generateRandomColor();
+      }
       player.socketId = socket.id;
       player.connected = true;
       player.disconnectedAt = null;
@@ -445,6 +470,7 @@ io.on("connection", (socket) => {
       player = {
         id: playerId,
         name,
+        color: color || generateRandomColor(),
         joinedAt: Date.now(),
         finishedMs: null,
         finishRank: null,
@@ -461,7 +487,7 @@ io.on("connection", (socket) => {
     broadcastRoom(room);
 
     if (typeof ack === "function") {
-      ack({ ok: true, roomId, playerId, progress: player.progress });
+      ack({ ok: true, roomId, playerId, progress: player.progress, color: player.color });
     }
   });
 
@@ -473,6 +499,22 @@ io.on("connection", (socket) => {
         return;
       }
       player.name = name;
+      broadcastRoom(room);
+    });
+  });
+
+  socket.on("update_color", (payload) => {
+    const color = normalizeHexColor(payload?.color);
+    if (!color) {
+      return;
+    }
+
+    withJoinedRoom(socket, (room) => {
+      const player = getPlayerForSocket(socket, room);
+      if (!player) {
+        return;
+      }
+      player.color = color;
       broadcastRoom(room);
     });
   });
