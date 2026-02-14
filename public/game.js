@@ -45,6 +45,7 @@
     localFinished: false,
     mapViewOpen: false,
     resumeProgress: null,
+    mapViewSnapshot: null,
   };
 
   const savedPlayerKey = normalizePlayerKey(localStorage.getItem("orient_player_key") || "");
@@ -957,6 +958,7 @@
   function setMapViewOpen(shouldOpen) {
     if (state.phase !== "running") {
       state.mapViewOpen = false;
+      state.mapViewSnapshot = null;
       SetMenuVis(true);
       renderUi();
       return;
@@ -964,16 +966,28 @@
 
     state.mapViewOpen = Boolean(shouldOpen);
     if (state.mapViewOpen) {
+      state.mapViewSnapshot = {
+        viewPos: mViewPos.copy(),
+        viewR: mViewR,
+        viewS: mViewS,
+        centerView: mCenterView,
+        dotAng: mDotAng,
+      };
       // Match original stop/menu behavior: open overview map and pause automatic movement.
       mMoving = false;
       mCenterView = true;
       SetMenuVis(true);
     } else {
-      MoveViewToDot();
-      mViewR = 0;
-      mDotAng = 0;
-      // After closing overview map, re-center player in viewport.
-      mCenterView = true;
+      if (state.mapViewSnapshot) {
+        mViewPos = state.mapViewSnapshot.viewPos.copy();
+        mViewR = state.mapViewSnapshot.viewR;
+        mViewS = state.mapViewSnapshot.viewS;
+        mCenterView = state.mapViewSnapshot.centerView;
+        mDotAng = state.mapViewSnapshot.dotAng;
+      } else {
+        MoveViewToDot();
+      }
+      state.mapViewSnapshot = null;
       SetMenuVis(false);
     }
 
@@ -1376,6 +1390,7 @@
 
     if (state.phase === "running" && previousPhase !== "running") {
       state.mapViewOpen = false;
+      state.mapViewSnapshot = null;
       let restored = false;
       if (state.resumeProgress) {
         restored = applyProgressSnapshot(state.resumeProgress);
@@ -1396,6 +1411,7 @@
 
     if (state.phase !== "running" && previousPhase === "running") {
       state.mapViewOpen = false;
+      state.mapViewSnapshot = null;
       mMoving = false;
       mCenterView = true;
       SetMenuVis(true);
@@ -1405,6 +1421,7 @@
 
     if (state.phase !== "running" && previousPhase !== "running") {
       state.mapViewOpen = false;
+      state.mapViewSnapshot = null;
       SetMenuVis(true);
     }
 
