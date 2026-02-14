@@ -249,25 +249,84 @@ canvas {
     min-height: 62vh;
   }
 
-  #roomPanel.mobile-running > * {
+  body.mobile-running .layout {
+    min-height: 100vh;
+    padding: 6px;
+    gap: 0;
+  }
+
+  body.mobile-running .sidebar {
+    position: fixed;
+    inset: 0;
+    padding: 0;
+    margin: 0;
+    background: transparent;
+    border-radius: 0;
+    max-height: none;
+    overflow: visible;
+    z-index: 20;
+    pointer-events: none;
+  }
+
+  body.mobile-running h1,
+  body.mobile-running .subtitle,
+  body.mobile-running #status,
+  body.mobile-running #joinPanel {
     display: none !important;
   }
 
-  #roomPanel.mobile-running #raceButtonsRow,
-  #roomPanel.mobile-running #compassControlRow {
-    display: flex !important;
-    justify-content: center;
-    margin-bottom: 8px;
+  body.mobile-running #roomPanel {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    pointer-events: none;
   }
 
-  #roomPanel.mobile-running #btnMap {
-    display: inline-block !important;
+  body.mobile-running #roomPanel > * {
+    display: none !important;
   }
 
-  #roomPanel.mobile-running #timerBadge {
+  body.mobile-running #timerBadge {
     display: block !important;
+    position: fixed;
+    top: 14px;
+    left: 50%;
+    transform: translateX(-50%);
     text-align: center;
-    font-size: 42px;
-    margin: 2px 0 6px;
+    font-size: clamp(44px, 9vw, 64px);
+    line-height: 1;
+    margin: 0;
+    z-index: 30;
+    pointer-events: none;
+  }
+
+  body.mobile-running #raceButtonsRow {
+    display: flex !important;
+    position: fixed;
+    right: 14px;
+    bottom: 14px;
+    margin: 0;
+    gap: 0;
+    z-index: 30;
+    justify-content: flex-end;
+    pointer-events: auto;
+  }
+
+  body.mobile-running #raceButtonsRow .btn:not(#btnMap) {
+    display: none !important;
+  }
+
+  body.mobile-running #btnMap {
+    display: inline-block !important;
+    min-width: 82px;
+    padding: 9px 14px;
+    border-radius: 12px;
+    font-size: 18px;
+  }
+
+  body.mobile-running .canvas-wrap {
+    min-height: calc(100vh - 12px);
+    height: calc(100vh - 12px);
   }
 }

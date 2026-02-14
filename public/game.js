@@ -25,8 +25,6 @@
     roomColorHex: document.getElementById("roomColorHex"),
     roomProfileBox: document.getElementById("roomProfileBox"),
     raceButtonsRow: document.getElementById("raceButtonsRow"),
-    compassControlRow: document.getElementById("compassControlRow"),
-    btnCompass: document.getElementById("btnCompass"),
     btnNewMap: document.getElementById("btnNewMap"),
     btnNewLeg: document.getElementById("btnNewLeg"),
     btnStart: document.getElementById("btnStart"),
@@ -163,11 +161,6 @@
     applyPlayerColor(generateRandomColor(), true);
   });
 
-  ui.btnCompass.addEventListener("click", () => {
-    mShowCompass = !mShowCompass;
-    updateCompassButton();
-  });
-
   let canvas = ui.canvas;
   let ctx = canvas.getContext("2d");
   let ctxWidth = 1;
@@ -193,7 +186,7 @@
   let mMenu = true;
   let mAtStart = true;
   let mCenterView = true;
-  let mShowCompass = false;
+  let mShowCompass = true;
   let mLastFrameTime = performance.now();
   let mNodeIndexMap = new Map();
   let mLastProgressPushAt = 0;
@@ -1177,11 +1170,6 @@
     }
   }
 
-  function updateCompassButton() {
-    ui.btnCompass.textContent = mShowCompass ? "Компас: ON" : "Компас: OFF";
-    ui.btnCompass.classList.toggle("is-active", mShowCompass);
-  }
-
   function generateRoomCode() {
     const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
     const bytes = new Uint8Array(6);
@@ -1577,14 +1565,13 @@
     ui.joinPanel.classList.toggle("hidden", inRoom);
     ui.roomPanel.classList.toggle("hidden", !inRoom);
     ui.roomCode.textContent = state.roomId || "-";
-    ui.roomPanel.classList.toggle("mobile-running", mobileRunning);
+    document.body.classList.toggle("mobile-running", mobileRunning);
     ui.roomProfileBox.classList.toggle("hidden", !inRoom || state.phase !== "lobby");
     ui.playersSection.classList.toggle("hidden", mobileRunning);
     ui.resultsSection.classList.toggle("hidden", mobileRunning);
     if (mobile && finished) {
       ui.resultsSection.classList.remove("hidden");
     }
-    updateCompassButton();
 
     let phaseText = "Лобби";
     if (running) {
