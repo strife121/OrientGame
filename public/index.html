@@ -56,34 +56,37 @@
             </div>
           </div>
 
-          <div class="row row-tight">
+          <div id="raceButtonsRow" class="row row-tight">
             <button id="btnNewMap" class="btn btn-small">Новая карта</button>
             <button id="btnNewLeg" class="btn btn-small">Новая нога</button>
             <button id="btnStart" class="btn btn-small">Старт</button>
             <button id="btnMap" class="btn btn-small hidden">MAP</button>
           </div>
 
-          <label class="checkbox">
-            <input id="compassCheck" type="checkbox" />
-            Компас
-          </label>
+          <div id="compassControlRow" class="row row-tight">
+            <button id="btnCompass" class="btn btn-small btn-alt" type="button">Компас: OFF</button>
+          </div>
 
           <div id="timerBadge" class="timer">00:00.0</div>
 
-          <h2>Игроки</h2>
-          <ul id="playersList" class="players"></ul>
+          <div id="playersSection">
+            <h2>Игроки</h2>
+            <ul id="playersList" class="players"></ul>
+          </div>
 
-          <h2>Результаты</h2>
-          <table class="results">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Игрок</th>
-                <th>Время</th>
-              </tr>
-            </thead>
-            <tbody id="resultsBody"></tbody>
-          </table>
+          <div id="resultsSection">
+            <h2>Результаты</h2>
+            <table class="results">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Игрок</th>
+                  <th>Время</th>
+                </tr>
+              </thead>
+              <tbody id="resultsBody"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 

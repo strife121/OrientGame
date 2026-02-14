@@ -24,11 +24,15 @@
     roomColorPreview: document.getElementById("roomColorPreview"),
     roomColorHex: document.getElementById("roomColorHex"),
     roomProfileBox: document.getElementById("roomProfileBox"),
+    raceButtonsRow: document.getElementById("raceButtonsRow"),
+    compassControlRow: document.getElementById("compassControlRow"),
+    btnCompass: document.getElementById("btnCompass"),
     btnNewMap: document.getElementById("btnNewMap"),
     btnNewLeg: document.getElementById("btnNewLeg"),
     btnStart: document.getElementById("btnStart"),
     btnMap: document.getElementById("btnMap"),
-    compassCheck: document.getElementById("compassCheck"),
+    playersSection: document.getElementById("playersSection"),
+    resultsSection: document.getElementById("resultsSection"),
     playersList: document.getElementById("playersList"),
     resultsBody: document.getElementById("resultsBody"),
     timerBadge: document.getElementById("timerBadge"),
@@ -159,8 +163,9 @@
     applyPlayerColor(generateRandomColor(), true);
   });
 
-  ui.compassCheck.addEventListener("change", () => {
-    mShowCompass = Boolean(ui.compassCheck.checked);
+  ui.btnCompass.addEventListener("click", () => {
+    mShowCompass = !mShowCompass;
+    updateCompassButton();
   });
 
   let canvas = ui.canvas;
@@ -1056,7 +1061,10 @@
   window.addEventListener("beforeunload", () => {
     maybePushProgress(true);
   });
-  window.addEventListener("resize", WindowResize);
+  window.addEventListener("resize", () => {
+    WindowResize();
+    renderUi();
+  });
   WindowResize();
   requestAnimationFrame(gameLoop);
 
@@ -1167,6 +1175,11 @@
     if (emitToServer && state.socket && state.connected && state.roomId) {
       state.socket.emit("update_color", { color });
     }
+  }
+
+  function updateCompassButton() {
+    ui.btnCompass.textContent = mShowCompass ? "Компас: ON" : "Компас: OFF";
+    ui.btnCompass.classList.toggle("is-active", mShowCompass);
   }
 
   function generateRoomCode() {
@@ -1556,15 +1569,27 @@
 
   function renderUi() {
     const inRoom = Boolean(state.roomId);
+    const running = state.phase === "running";
+    const finished = state.phase === "finished";
+    const mobile = window.matchMedia("(max-width: 940px)").matches;
+    const mobileRunning = mobile && running;
+
     ui.joinPanel.classList.toggle("hidden", inRoom);
     ui.roomPanel.classList.toggle("hidden", !inRoom);
     ui.roomCode.textContent = state.roomId || "-";
+    ui.roomPanel.classList.toggle("mobile-running", mobileRunning);
     ui.roomProfileBox.classList.toggle("hidden", !inRoom || state.phase !== "lobby");
+    ui.playersSection.classList.toggle("hidden", mobileRunning);
+    ui.resultsSection.classList.toggle("hidden", mobileRunning);
+    if (mobile && finished) {
+      ui.resultsSection.classList.remove("hidden");
+    }
+    updateCompassButton();
 
     let phaseText = "Лобби";
-    if (state.phase === "running") {
+    if (running) {
       phaseText = "Гонка идет";
-    } else if (state.phase === "finished") {
+    } else if (finished) {
       phaseText = "Гонка завершена";
     }
     const playerCount = state.players.length;
@@ -1576,7 +1601,6 @@
     ui.btnNewLeg.disabled = disabled || state.phase === "running";
     ui.btnMap.disabled = disabled || state.phase !== "running";
 
-    const running = state.phase === "running";
     ui.btnNewMap.classList.toggle("hidden", running);
     ui.btnNewLeg.classList.toggle("hidden", running);
     ui.btnStart.classList.toggle("hidden", running);

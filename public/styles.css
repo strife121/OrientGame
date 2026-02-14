@@ -122,6 +122,10 @@ h2 {
   cursor: not-allowed;
 }
 
+.btn.is-active {
+  background: linear-gradient(140deg, #0f8b46, #2dad62);
+}
+
 .btn-alt {
   background: linear-gradient(140deg, #355987, #5379aa);
 }
@@ -243,5 +247,27 @@ canvas {
 
   .canvas-wrap {
     min-height: 62vh;
+  }
+
+  #roomPanel.mobile-running > * {
+    display: none !important;
+  }
+
+  #roomPanel.mobile-running #raceButtonsRow,
+  #roomPanel.mobile-running #compassControlRow {
+    display: flex !important;
+    justify-content: center;
+    margin-bottom: 8px;
+  }
+
+  #roomPanel.mobile-running #btnMap {
+    display: inline-block !important;
+  }
+
+  #roomPanel.mobile-running #timerBadge {
+    display: block !important;
+    text-align: center;
+    font-size: 42px;
+    margin: 2px 0 6px;
   }
 }
