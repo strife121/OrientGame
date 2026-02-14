@@ -23,6 +23,7 @@
     roomRandomColorBtn: document.getElementById("roomRandomColorBtn"),
     roomColorPreview: document.getElementById("roomColorPreview"),
     roomColorHex: document.getElementById("roomColorHex"),
+    roomProfileBox: document.getElementById("roomProfileBox"),
     btnNewMap: document.getElementById("btnNewMap"),
     btnNewLeg: document.getElementById("btnNewLeg"),
     btnStart: document.getElementById("btnStart"),
@@ -1115,6 +1116,20 @@
     if (changed) {
       localStorage.setItem("orient_player_name", name);
     }
+    if (state.roomId) {
+      for (const player of state.players) {
+        if (player.id === state.playerId) {
+          player.name = name;
+        }
+      }
+      for (const result of state.results) {
+        if (result.id === state.playerId) {
+          result.name = name;
+        }
+      }
+      renderPlayers();
+      renderResults();
+    }
     if (emitToServer && state.socket && state.connected && state.roomId) {
       state.socket.emit("update_name", { name });
     }
@@ -1135,6 +1150,20 @@
       localStorage.setItem("orient_player_color", color);
     }
     updateColorPreview();
+    if (state.roomId) {
+      for (const player of state.players) {
+        if (player.id === state.playerId) {
+          player.color = color;
+        }
+      }
+      for (const result of state.results) {
+        if (result.id === state.playerId) {
+          result.color = color;
+        }
+      }
+      renderPlayers();
+      renderResults();
+    }
     if (emitToServer && state.socket && state.connected && state.roomId) {
       state.socket.emit("update_color", { color });
     }
@@ -1530,6 +1559,7 @@
     ui.joinPanel.classList.toggle("hidden", inRoom);
     ui.roomPanel.classList.toggle("hidden", !inRoom);
     ui.roomCode.textContent = state.roomId || "-";
+    ui.roomProfileBox.classList.toggle("hidden", !inRoom || state.phase !== "lobby");
 
     let phaseText = "Лобби";
     if (state.phase === "running") {
