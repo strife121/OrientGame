@@ -964,7 +964,8 @@
       MoveViewToDot();
       mViewR = 0;
       mDotAng = 0;
-      mCenterView = false;
+      // After closing overview map, re-center player in viewport.
+      mCenterView = true;
       SetMenuVis(false);
     }
 
