@@ -851,7 +851,11 @@
 
   function CanvasTouchDown(e) {
     e.preventDefault();
-    MouseDown(e.targetTouches[0].pageX, e.targetTouches[0].pageY);
+    const touch = e.targetTouches[0] || e.changedTouches[0] || e.touches[0];
+    if (!touch) {
+      return;
+    }
+    MouseDown(touch.clientX, touch.clientY);
   }
 
   function DrawMap() {
