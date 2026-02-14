@@ -251,6 +251,7 @@ canvas {
 
   body.mobile-running .layout {
     min-height: 100vh;
+    min-height: 100dvh;
     padding: 6px;
     gap: 0;
   }
@@ -331,6 +332,8 @@ canvas {
 
   body.mobile-running .canvas-wrap {
     min-height: calc(100vh - 12px);
+    min-height: calc(100dvh - 12px);
     height: calc(100vh - 12px);
+    height: calc(100dvh - 12px);
   }
 }

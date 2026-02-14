@@ -838,8 +838,14 @@
       return;
     }
 
-    let x = (aX - canvas.getBoundingClientRect().left - ctxWidth * 0.5) / mViewS;
-    let y = (aY - canvas.getBoundingClientRect().top - ctxHeight * (mCenterView ? 0.5 : 0.8)) / mViewS;
+    const rect = canvas.getBoundingClientRect();
+    const safeWidth = rect.width || 1;
+    const safeHeight = rect.height || 1;
+    const canvasX = (aX - rect.left) * (ctxWidth / safeWidth);
+    const canvasY = (aY - rect.top) * (ctxHeight / safeHeight);
+
+    let x = (canvasX - ctxWidth * 0.5) / mViewS;
+    let y = (canvasY - ctxHeight * (mCenterView ? 0.5 : 0.8)) / mViewS;
     let _x = Math.cos(-mViewR) * x - Math.sin(-mViewR) * y;
     let _y = Math.sin(-mViewR) * x + Math.cos(-mViewR) * y;
     mDotNode.ClickArrows(new vec2(_x + mViewPos.x, _y + mViewPos.y));
@@ -1040,6 +1046,11 @@
     canvas.height = ctxHeight = maxH;
   }
 
+  function HandleResize() {
+    WindowResize();
+    renderUi();
+  }
+
   function gameLoop(now) {
     const dt = Math.min(0.05, (now - mLastFrameTime) / 1000);
     mLastFrameTime = now;
@@ -1058,11 +1069,18 @@
   window.addEventListener("beforeunload", () => {
     maybePushProgress(true);
   });
-  window.addEventListener("resize", () => {
-    WindowResize();
-    renderUi();
-  });
-  WindowResize();
+  window.addEventListener("resize", HandleResize);
+  window.addEventListener("orientationchange", HandleResize);
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener("resize", HandleResize);
+  }
+  if ("ResizeObserver" in window) {
+    const resizeObserver = new ResizeObserver(() => {
+      HandleResize();
+    });
+    resizeObserver.observe(ui.canvasWrap);
+  }
+  HandleResize();
   requestAnimationFrame(gameLoop);
 
   if (urlRoom) {
