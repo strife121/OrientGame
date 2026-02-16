@@ -308,6 +308,7 @@
   let mDotPosxPID = new PID(0.16, 0.1, 0);
   let mDotPosyPID = new PID(0.16, 0.1, 0);
   let mMoving = false;
+  let mRoadChoiceMode = false;
   let mMenu = true;
   let mAtStart = true;
   let mCenterView = true;
@@ -728,6 +729,7 @@
             if (a === mDotFrom && mDotI < 0.1) {
               mDotI = 0.999;
             }
+            mRoadChoiceMode = false;
             return;
           }
         }
@@ -1037,6 +1039,7 @@
     mAtStart = true;
     mCenterView = true;
     mMoving = false;
+    mRoadChoiceMode = false;
   }
 
   function MoveViewToDot() {
@@ -1048,6 +1051,35 @@
     mDotPosxPID.Reset();
     mDotPosyPID.Reset();
     mDotAngPID.Reset();
+  }
+
+  function tryHandleCheckpointReached() {
+    if (state.phase !== "running" || state.localFinished || mCheckpointNodes.length <= 0 || !mDotNode) {
+      return false;
+    }
+    const targetNode = mCheckpointNodes[Math.min(mNextCheckpointIdx, mCheckpointNodes.length - 1)];
+    if (!targetNode || mDotNode !== targetNode) {
+      return false;
+    }
+
+    mNextCheckpointIdx += 1;
+    if (state.socket && state.connected) {
+      state.socket.emit("player_split", { splitIndex: mNextCheckpointIdx });
+    }
+
+    if (mNextCheckpointIdx >= mCheckpointNodes.length) {
+      state.localFinished = true;
+      mMoving = false;
+      mRoadChoiceMode = false;
+      if (state.socket && state.connected) {
+        state.socket.emit("player_finished");
+      }
+      return true;
+    }
+
+    mMoving = false;
+    mRoadChoiceMode = mDotNode.neighborCnt <= 2;
+    return true;
   }
 
   function Update(aDt) {
@@ -1078,13 +1110,24 @@
             mDotTo = mDotNode.GetValidNeighborIdx(RandRangeI(1, 4));
           }
           mDotI -= 1;
+          mDotNode.UpdateDotPos();
+
+          if (tryHandleCheckpointReached()) {
+            break;
+          }
 
           if (mDotNode.neighborCnt > 2 && mDotNode !== mDstNode) {
             mMoving = false;
+            mRoadChoiceMode = false;
+            break;
           }
         }
         mDotNode.UpdateDotPos();
         dist += vec2.sub(mDotPos, lastDP).length();
+
+        if (tryHandleCheckpointReached()) {
+          break;
+        }
       }
 
       mViewS = (17 * Math.min(ctxWidth, ctxHeight)) / 600;
@@ -1101,22 +1144,7 @@
       mDotPosyPID.Step(aDt, mDotPos.y - mViewPos.y);
       mViewPos.y += mDotPosyPID.GetValue();
 
-      if (state.phase === "running" && !state.localFinished && mCheckpointNodes.length > 0 && mDotI > 0.5) {
-        const targetNode = mCheckpointNodes[Math.min(mNextCheckpointIdx, mCheckpointNodes.length - 1)];
-        if (targetNode && mDotNode === targetNode) {
-          mNextCheckpointIdx += 1;
-          if (state.socket && state.connected) {
-            state.socket.emit("player_split", { splitIndex: mNextCheckpointIdx });
-          }
-          if (mNextCheckpointIdx >= mCheckpointNodes.length) {
-            state.localFinished = true;
-            mMoving = false;
-            if (state.socket && state.connected) {
-              state.socket.emit("player_finished");
-            }
-          }
-        }
-      }
+      tryHandleCheckpointReached();
     }
   }
 
@@ -1135,7 +1163,11 @@
     let y = (canvasY - ctxHeight * (mCenterView ? 0.5 : 0.8)) / mViewS;
     let _x = Math.cos(-mViewR) * x - Math.sin(-mViewR) * y;
     let _y = Math.sin(-mViewR) * x + Math.cos(-mViewR) * y;
-    mDotNode.ClickArrows(new vec2(_x + mViewPos.x, _y + mViewPos.y));
+    const worldPos = new vec2(_x + mViewPos.x, _y + mViewPos.y);
+    if (!mMoving && !mMenu && mRoadChoiceMode && clickRoadChoiceArrows(worldPos)) {
+      return;
+    }
+    mDotNode.ClickArrows(worldPos);
   }
 
   function CanvasMouseDown(e) {
@@ -1207,6 +1239,94 @@
     const c1 = vec2.interpolate(p1, node.center, 0.7);
     const c2 = vec2.interpolate(p2, node.center, 0.7);
     return vec2.bezier(p1, c1, c2, p2, dotI);
+  }
+
+  function getDotCurvePoint(node, fromIdx, toIdx, t) {
+    if (!node) {
+      return null;
+    }
+    const from = Math.min(3, Math.max(0, Math.floor(Number(fromIdx))));
+    const to = Math.min(3, Math.max(0, Math.floor(Number(toIdx))));
+    const i = Clamp(Number(t), 0, 1);
+    const p1 = node.GetNeighborPos(from, 0.5);
+    const p2 = node.GetNeighborPos(to, 0.5);
+    const c1 = vec2.interpolate(p1, node.center, 0.7);
+    const c2 = vec2.interpolate(p2, node.center, 0.7);
+    return vec2.bezier(p1, c1, c2, p2, i);
+  }
+
+  function normalizeDirOrFallback(v, fallbackX, fallbackY) {
+    const len = v.length();
+    if (len < 0.0001) {
+      return new vec2(fallbackX, fallbackY);
+    }
+    return vec2.divide(v, len);
+  }
+
+  function getRoadChoiceGeometry() {
+    if (!mRoadChoiceMode || !mDotNode) {
+      return null;
+    }
+    const base = getDotCurvePoint(mDotNode, mDotFrom, mDotTo, mDotI);
+    if (!base) {
+      return null;
+    }
+    const next = getDotCurvePoint(mDotNode, mDotFrom, mDotTo, Clamp(mDotI + 0.08, 0, 1));
+    const prev = getDotCurvePoint(mDotNode, mDotFrom, mDotTo, Clamp(mDotI - 0.08, 0, 1));
+    if (!next || !prev) {
+      return null;
+    }
+
+    const fallbackForward = vec2.sub(next, prev);
+    const forwardDir = normalizeDirOrFallback(vec2.sub(next, base), fallbackForward.x || 0, fallbackForward.y || -1);
+    const backDir = normalizeDirOrFallback(vec2.sub(prev, base), -forwardDir.x || 0, -forwardDir.y || 1);
+
+    const dist = 4.4;
+    const forwardPos = new vec2(base.x + forwardDir.x * dist, base.y + forwardDir.y * dist);
+    const backPos = new vec2(base.x + backDir.x * dist, base.y + backDir.y * dist);
+
+    return {
+      forwardPos,
+      backPos,
+      forwardAngle: Math.atan2(forwardDir.x, -forwardDir.y),
+      backAngle: Math.atan2(backDir.x, -backDir.y),
+    };
+  }
+
+  function drawRoadChoiceArrows(drawCtx) {
+    const geometry = getRoadChoiceGeometry();
+    if (!geometry) {
+      return;
+    }
+    DrawArrow(drawCtx, geometry.forwardPos.x, geometry.forwardPos.y, geometry.forwardAngle);
+    DrawArrow(drawCtx, geometry.backPos.x, geometry.backPos.y, geometry.backAngle);
+  }
+
+  function clickRoadChoiceArrows(worldPos) {
+    const geometry = getRoadChoiceGeometry();
+    if (!geometry) {
+      return false;
+    }
+    if (vec2.sub(geometry.forwardPos, worldPos).length() < 3.3) {
+      mRoadChoiceMode = false;
+      mMoving = true;
+      mAtStart = false;
+      mCenterView = false;
+      return true;
+    }
+    if (vec2.sub(geometry.backPos, worldPos).length() < 3.3) {
+      const oldFrom = mDotFrom;
+      mDotFrom = mDotTo;
+      mDotTo = oldFrom;
+      mDotI = Clamp(1 - mDotI, 0, 1);
+      mDotNode.UpdateDotPos();
+      mRoadChoiceMode = false;
+      mMoving = true;
+      mAtStart = false;
+      mCenterView = false;
+      return true;
+    }
+    return false;
   }
 
   function drawObserverPlayers(drawCtx) {
@@ -1315,7 +1435,11 @@
     }
 
     if (!mMoving && !mMenu) {
-      mDotNode.DrawArrows(ctx);
+      if (mRoadChoiceMode) {
+        drawRoadChoiceArrows(ctx);
+      } else {
+        mDotNode.DrawArrows(ctx);
+      }
     }
 
     ctx.restore();
@@ -1379,6 +1503,7 @@
     if (state.phase !== "running") {
       state.mapViewOpen = false;
       state.mapViewSnapshot = null;
+      mRoadChoiceMode = false;
       SetMenuVis(true);
       renderUi();
       return;
@@ -1386,6 +1511,7 @@
 
     state.mapViewOpen = Boolean(shouldOpen);
     if (state.mapViewOpen) {
+      const wasMoving = mMoving;
       state.mapViewSnapshot = {
         viewPos: mViewPos.copy(),
         viewR: mViewR,
@@ -1395,6 +1521,9 @@
       };
       // Match original stop/menu behavior: open overview map and pause automatic movement.
       mMoving = false;
+      if (wasMoving && !state.localFinished && !state.isObserver) {
+        mRoadChoiceMode = true;
+      }
       mCenterView = true;
       SetMenuVis(true);
     } else {
@@ -1689,6 +1818,7 @@
       state.mapViewOpen = true;
       state.mapViewSnapshot = null;
       mMoving = false;
+      mRoadChoiceMode = false;
       mCenterView = true;
       SetMenuVis(true);
     }
@@ -2074,6 +2204,7 @@
     const previousRaceActive = previousPhase === "countdown" || previousPhase === "running";
 
     if (currentRaceActive && !previousRaceActive) {
+      mRoadChoiceMode = false;
       state.mapViewSnapshot = null;
       let restored = false;
       if (!state.isObserver && state.phase === "running") {
@@ -2111,6 +2242,7 @@
       state.mapViewOpen = false;
       state.mapViewSnapshot = null;
       mMoving = false;
+      mRoadChoiceMode = false;
       mCenterView = true;
       SetMenuVis(true);
       clearLocalProgress(state.roomId);
@@ -2121,6 +2253,7 @@
     if (!currentRaceActive && !previousRaceActive) {
       state.mapViewOpen = false;
       state.mapViewSnapshot = null;
+      mRoadChoiceMode = false;
       SetMenuVis(true);
     }
 
@@ -2128,6 +2261,7 @@
       state.mapViewOpen = true;
       state.mapViewSnapshot = null;
       mMoving = false;
+      mRoadChoiceMode = false;
       mCenterView = true;
       SetMenuVis(true);
     }
