@@ -8,6 +8,11 @@ const PORT = Number(process.env.PORT || 3000);
 const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
 const ACCESS_COOKIE = "orient_access";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 180000);
+const COUNTDOWN_SECONDS = 5;
+const COUNTDOWN_MS = COUNTDOWN_SECONDS * 1000;
+const MIN_CHECKPOINTS = 1;
+const MAX_CHECKPOINTS = 10;
+const DEFAULT_CHECKPOINTS = 3;
 
 const app = express();
 const server = http.createServer(app);
@@ -92,23 +97,101 @@ function randomSeed() {
   return crypto.randomInt(1, 0x7fffffff);
 }
 
+function nextSeedDifferent(prevSeed) {
+  const prev = Number(prevSeed);
+  let next = randomSeed();
+  for (let attempt = 0; attempt < 6 && Number.isFinite(prev) && next === prev; attempt += 1) {
+    next = randomSeed();
+  }
+  if (Number.isFinite(prev) && next === prev) {
+    return ((prev + 1) % 0x7fffffff) || 1;
+  }
+  return next;
+}
+
 function createRoom(roomId) {
   return {
     id: roomId,
     phase: "lobby",
     startedAt: null,
+    countdownEndsAt: null,
     mapSeed: randomSeed(),
     legSeed: randomSeed(),
+    checkpointCount: DEFAULT_CHECKPOINTS,
+    showPositionOnMap: true,
     leaderId: null,
     players: new Map(),
     createdAt: Date.now(),
+    lastProgressBroadcastAt: 0,
+    countdownTimer: null,
   };
+}
+
+function clearCountdownTimer(room) {
+  if (room.countdownTimer) {
+    clearTimeout(room.countdownTimer);
+    room.countdownTimer = null;
+  }
+  room.countdownEndsAt = null;
+}
+
+function resetRoomToLobby(room, options = {}) {
+  const resetMap = Boolean(options.resetMap);
+  const resetLeg = Boolean(options.resetLeg);
+
+  clearCountdownTimer(room);
+  if (resetMap) {
+    room.mapSeed = nextSeedDifferent(room.mapSeed);
+  }
+  if (resetLeg) {
+    room.legSeed = nextSeedDifferent(room.legSeed);
+  }
+  room.phase = "lobby";
+  room.startedAt = null;
+  clearFinishes(room);
+  clearProgress(room);
+}
+
+function promoteCountdownIfDue(room) {
+  if (room.phase !== "countdown" || !room.startedAt) {
+    return false;
+  }
+  if (Date.now() < room.startedAt) {
+    return false;
+  }
+  clearCountdownTimer(room);
+  room.phase = "running";
+  return true;
+}
+
+function startRaceCountdown(room) {
+  clearCountdownTimer(room);
+  room.lastProgressBroadcastAt = 0;
+  room.phase = "countdown";
+  room.startedAt = Date.now() + COUNTDOWN_MS;
+  room.countdownEndsAt = room.startedAt;
+  clearFinishes(room);
+  clearProgress(room);
+
+  const delay = Math.max(0, room.countdownEndsAt - Date.now());
+  room.countdownTimer = setTimeout(() => {
+    const liveRoom = rooms.get(room.id);
+    if (!liveRoom) {
+      return;
+    }
+    if (promoteCountdownIfDue(liveRoom)) {
+      broadcastRoom(liveRoom);
+    }
+  }, delay);
 }
 
 function clearFinishes(room) {
   for (const player of room.players.values()) {
     player.finishedMs = null;
+    player.withdrawn = false;
+    player.withdrawnAt = null;
     player.finishRank = null;
+    player.splits = [];
   }
 }
 
@@ -118,36 +201,103 @@ function clearProgress(room) {
   }
 }
 
+function isRaceParticipant(player) {
+  return !player.observer;
+}
+
+function isPlayerInRace(player) {
+  return player.connected || player.finishedMs !== null || player.withdrawn;
+}
+
 function allFinished(room) {
   let activePlayers = 0;
   for (const player of room.players.values()) {
-    const inRace = player.connected || player.finishedMs !== null;
+    if (!isRaceParticipant(player)) {
+      continue;
+    }
+    const inRace = isPlayerInRace(player);
     if (!inRace) {
       continue;
     }
     activePlayers += 1;
-    if (player.finishedMs === null) {
+    if (player.finishedMs === null && !player.withdrawn) {
       return false;
     }
   }
   return activePlayers > 0;
 }
 
+function allActiveWithdrawn(room) {
+  let activePlayers = 0;
+  let withdrawnPlayers = 0;
+  for (const player of room.players.values()) {
+    if (!isRaceParticipant(player)) {
+      continue;
+    }
+    const inRace = isPlayerInRace(player);
+    if (!inRace) {
+      continue;
+    }
+    activePlayers += 1;
+    if (player.withdrawn) {
+      withdrawnPlayers += 1;
+    }
+  }
+  return activePlayers > 0 && activePlayers === withdrawnPlayers;
+}
+
+function hasActiveRaceParticipants(room) {
+  for (const player of room.players.values()) {
+    if (!isRaceParticipant(player)) {
+      continue;
+    }
+    if (isPlayerInRace(player)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function serializeProgressForClient(progress) {
+  if (!progress || typeof progress !== "object") {
+    return null;
+  }
+  return {
+    mapSeed: progress.mapSeed,
+    legSeed: progress.legSeed,
+    startedAt: progress.startedAt,
+    checkpointIndex: progress.checkpointIndex,
+    dotNodeIdx: progress.dotNodeIdx,
+    dotFrom: progress.dotFrom,
+    dotTo: progress.dotTo,
+    dotI: progress.dotI,
+    atStart: Boolean(progress.atStart),
+    moving: Boolean(progress.moving),
+    route: Array.isArray(progress.route) ? progress.route : [],
+    updatedAt: progress.updatedAt,
+  };
+}
+
 function serializeRoom(room) {
+  promoteCountdownIfDue(room);
+
   const players = [...room.players.values()].sort((a, b) => a.joinedAt - b.joinedAt);
   const results = players
-    .filter((player) => player.finishedMs !== null)
+    .filter((player) => !player.observer && (player.finishedMs !== null || player.withdrawn))
     .sort((a, b) => {
       if (a.finishRank !== b.finishRank) {
         return a.finishRank - b.finishRank;
       }
-      return a.finishedMs - b.finishedMs;
+      const aTime = Number.isFinite(a.finishedMs) ? a.finishedMs : Number.MAX_SAFE_INTEGER;
+      const bTime = Number.isFinite(b.finishedMs) ? b.finishedMs : Number.MAX_SAFE_INTEGER;
+      return aTime - bTime;
     })
     .map((player) => ({
       id: player.id,
       name: player.name,
       finishRank: player.finishRank,
       finishedMs: player.finishedMs,
+      status: player.withdrawn ? "withdrawn" : "finished",
       color: player.color,
     }));
 
@@ -155,8 +305,12 @@ function serializeRoom(room) {
     roomId: room.id,
     phase: room.phase,
     startedAt: room.startedAt,
+    countdownEndsAt: room.countdownEndsAt,
     mapSeed: room.mapSeed,
     legSeed: room.legSeed,
+    checkpointCount: room.checkpointCount,
+    showPositionOnMap: room.showPositionOnMap !== false,
+    isObserver: false,
     leaderId: room.leaderId,
     serverNow: Date.now(),
     players: players.map((player) => ({
@@ -165,8 +319,12 @@ function serializeRoom(room) {
       joinedAt: player.joinedAt,
       finishRank: player.finishRank,
       finishedMs: player.finishedMs,
+      withdrawn: Boolean(player.withdrawn),
       connected: player.connected,
       color: player.color,
+      observer: Boolean(player.observer),
+      splits: Array.isArray(player.splits) ? player.splits : [],
+      progress: serializeProgressForClient(player.progress),
     })),
     results,
   };
@@ -202,11 +360,20 @@ function clearRoomTimers(roomId) {
 
 function deleteRoomIfEmpty(room) {
   if (room.players.size === 0) {
+    clearCountdownTimer(room);
     clearRoomTimers(room.id);
     rooms.delete(room.id);
     return true;
   }
   return false;
+}
+
+function requireLeader(socket, room, actionLabel) {
+  if (!room.leaderId || socket.data.playerId !== room.leaderId) {
+    socket.emit("room_action_denied", `Только лидер может ${actionLabel}.`);
+    return false;
+  }
+  return true;
 }
 
 function updateLeader(room) {
@@ -235,8 +402,12 @@ function removePlayerImmediately(room, playerId, shouldBroadcast = true) {
 
   updateLeader(room);
 
-  if (room.phase === "running" && allFinished(room)) {
-    room.phase = "finished";
+  if (room.phase === "running") {
+    if (!hasActiveRaceParticipants(room)) {
+      resetRoomToLobby(room);
+    } else if (allFinished(room)) {
+      room.phase = "finished";
+    }
   }
 
   if (deleteRoomIfEmpty(room)) {
@@ -268,8 +439,12 @@ function scheduleDisconnectCleanup(room, playerId) {
     liveRoom.players.delete(playerId);
     updateLeader(liveRoom);
 
-    if (liveRoom.phase === "running" && allFinished(liveRoom)) {
-      liveRoom.phase = "finished";
+    if (liveRoom.phase === "running") {
+      if (!hasActiveRaceParticipants(liveRoom)) {
+        resetRoomToLobby(liveRoom);
+      } else if (allFinished(liveRoom)) {
+        liveRoom.phase = "finished";
+      }
     }
 
     if (deleteRoomIfEmpty(liveRoom)) {
@@ -329,6 +504,7 @@ function sanitizeProgress(progress) {
     mapSeed: Math.floor(mapSeed),
     legSeed: Math.floor(legSeed),
     startedAt: Number.isFinite(Number(progress.startedAt)) ? Math.floor(Number(progress.startedAt)) : null,
+    checkpointIndex: clampInt(progress.checkpointIndex, 0, MAX_CHECKPOINTS, 0),
     dotNodeIdx: clampInt(progress.dotNodeIdx, 0, 10000, 0),
     dotFrom: clampInt(progress.dotFrom, 0, 3, 0),
     dotTo: clampInt(progress.dotTo, 0, 3, 0),
@@ -466,6 +642,12 @@ io.on("connection", (socket) => {
       player.socketId = socket.id;
       player.connected = true;
       player.disconnectedAt = null;
+      if (!Array.isArray(player.splits)) {
+        player.splits = [];
+      }
+      if (typeof player.observer !== "boolean") {
+        player.observer = false;
+      }
     } else {
       player = {
         id: playerId,
@@ -473,8 +655,12 @@ io.on("connection", (socket) => {
         color: color || generateRandomColor(),
         joinedAt: Date.now(),
         finishedMs: null,
+        withdrawn: false,
+        withdrawnAt: null,
         finishRank: null,
         progress: null,
+        splits: [],
+        observer: false,
         socketId: socket.id,
         connected: true,
         disconnectedAt: null,
@@ -521,33 +707,125 @@ io.on("connection", (socket) => {
 
   socket.on("new_map", () => {
     withJoinedRoom(socket, (room) => {
-      room.mapSeed = randomSeed();
-      room.legSeed = randomSeed();
-      room.phase = "lobby";
-      room.startedAt = null;
-      clearFinishes(room);
-      clearProgress(room);
+      if (!requireLeader(socket, room, "менять карту")) {
+        return;
+      }
+      resetRoomToLobby(room, { resetMap: true, resetLeg: true });
       broadcastRoom(room);
     });
   });
 
   socket.on("new_leg", () => {
     withJoinedRoom(socket, (room) => {
-      room.legSeed = randomSeed();
-      room.phase = "lobby";
-      room.startedAt = null;
-      clearFinishes(room);
-      clearProgress(room);
+      if (!requireLeader(socket, room, "менять дистанцию")) {
+        return;
+      }
+      resetRoomToLobby(room, { resetLeg: true });
       broadcastRoom(room);
+    });
+  });
+
+  socket.on("set_checkpoint_count", (payload) => {
+    withJoinedRoom(socket, (room) => {
+      if (!requireLeader(socket, room, "задавать количество КП")) {
+        return;
+      }
+      if (room.phase !== "lobby") {
+        socket.emit("room_action_denied", "Количество КП можно менять только в лобби.");
+        return;
+      }
+
+      const nextCount = clampInt(payload?.count, MIN_CHECKPOINTS, MAX_CHECKPOINTS, room.checkpointCount);
+      if (nextCount === room.checkpointCount) {
+        return;
+      }
+
+      room.checkpointCount = nextCount;
+      resetRoomToLobby(room, { resetLeg: true });
+      broadcastRoom(room);
+    });
+  });
+
+  socket.on("set_show_position_on_map", (payload) => {
+    withJoinedRoom(socket, (room) => {
+      if (!requireLeader(socket, room, "управлять показом позиции")) {
+        return;
+      }
+      if (room.phase !== "lobby") {
+        socket.emit("room_action_denied", "Показ позиции можно менять только в лобби.");
+        return;
+      }
+
+      const enabled = payload?.enabled !== false;
+      if (room.showPositionOnMap === enabled) {
+        return;
+      }
+
+      room.showPositionOnMap = enabled;
+      broadcastRoom(room);
+    });
+  });
+
+  socket.on("set_observer_mode", (payload) => {
+    withJoinedRoom(socket, (room) => {
+      const player = getPlayerForSocket(socket, room);
+      if (!player) {
+        return;
+      }
+
+      const enabled = payload?.enabled === true;
+      if (player.observer === enabled) {
+        return;
+      }
+
+      const raceActive = room.phase === "running" || room.phase === "countdown";
+      if (!enabled && raceActive) {
+        socket.emit("room_action_denied", "Отключить режим наблюдателя можно после завершения гонки.");
+        return;
+      }
+
+      player.observer = enabled;
+      if (enabled) {
+        player.finishedMs = null;
+        player.withdrawn = false;
+        player.withdrawnAt = null;
+        player.finishRank = null;
+        player.progress = null;
+        player.splits = [];
+      }
+
+      if ((room.phase === "running" || room.phase === "countdown") && !hasActiveRaceParticipants(room)) {
+        resetRoomToLobby(room);
+      } else if (room.phase === "running" && allFinished(room)) {
+        room.phase = "finished";
+      }
+
+      broadcastRoom(room);
+    });
+  });
+
+  socket.on("sync_phase", () => {
+    withJoinedRoom(socket, (room) => {
+      if (promoteCountdownIfDue(room)) {
+        broadcastRoom(room);
+      }
     });
   });
 
   socket.on("start_race", () => {
     withJoinedRoom(socket, (room) => {
-      room.phase = "running";
-      room.startedAt = Date.now();
-      clearFinishes(room);
-      clearProgress(room);
+      if (!requireLeader(socket, room, "запускать старт")) {
+        return;
+      }
+      if (room.phase !== "lobby") {
+        return;
+      }
+      const starters = [...room.players.values()].filter((entry) => entry.connected && !entry.observer);
+      if (!starters.length) {
+        socket.emit("room_action_denied", "Нет участников дистанции. Отключите режим наблюдателя хотя бы у одного игрока.");
+        return;
+      }
+      startRaceCountdown(room);
       broadcastRoom(room);
     });
   });
@@ -559,7 +837,7 @@ io.on("connection", (socket) => {
       }
 
       const player = getPlayerForSocket(socket, room);
-      if (!player || player.finishedMs !== null) {
+      if (!player || player.observer || player.finishedMs !== null || player.withdrawn) {
         return;
       }
 
@@ -577,6 +855,36 @@ io.on("connection", (socket) => {
       }
 
       player.progress = progress;
+      const now = Date.now();
+      if (!room.lastProgressBroadcastAt || now - room.lastProgressBroadcastAt >= 160) {
+        room.lastProgressBroadcastAt = now;
+        broadcastRoom(room);
+      }
+    });
+  });
+
+  socket.on("player_split", (payload) => {
+    withJoinedRoom(socket, (room) => {
+      if (room.phase !== "running" || !room.startedAt) {
+        return;
+      }
+
+      const player = getPlayerForSocket(socket, room);
+      if (!player || player.observer || player.finishedMs !== null || player.withdrawn) {
+        return;
+      }
+
+      const splitIndex = clampInt(payload?.splitIndex, 1, room.checkpointCount, 0);
+      const expectedIndex = (Array.isArray(player.splits) ? player.splits.length : 0) + 1;
+      if (splitIndex !== expectedIndex) {
+        return;
+      }
+
+      const splitMs = Math.max(0, Date.now() - room.startedAt);
+      const previousSplit = Array.isArray(player.splits) && player.splits.length ? player.splits[player.splits.length - 1] : 0;
+      const safeSplit = Math.max(previousSplit, splitMs);
+      player.splits.push(safeSplit);
+      broadcastRoom(room);
     });
   });
 
@@ -587,13 +895,15 @@ io.on("connection", (socket) => {
       }
 
       const player = getPlayerForSocket(socket, room);
-      if (!player || player.finishedMs !== null) {
+      if (!player || player.observer || player.finishedMs !== null || player.withdrawn) {
         return;
       }
 
       player.finishedMs = Math.max(0, Date.now() - room.startedAt);
+      if (player.splits.length === room.checkpointCount - 1) {
+        player.splits.push(player.finishedMs);
+      }
       player.finishRank = 1 + [...room.players.values()].filter((entry) => entry.finishRank !== null).length;
-      player.progress = null;
 
       if (allFinished(room)) {
         room.phase = "finished";
@@ -601,6 +911,76 @@ io.on("connection", (socket) => {
 
       broadcastRoom(room);
     });
+  });
+
+  socket.on("player_withdrawn", (payloadOrAck, maybeAck) => {
+    const payload =
+      payloadOrAck && typeof payloadOrAck === "object" && typeof payloadOrAck !== "function" ? payloadOrAck : {};
+    const ack = typeof payloadOrAck === "function" ? payloadOrAck : maybeAck;
+    const respond = (payload) => {
+      if (typeof ack === "function") {
+        ack(payload);
+      }
+    };
+
+    const fallbackRoomId = normalizeRoomId(payload.roomId);
+    const room = getRoomForSocket(socket) || (fallbackRoomId ? rooms.get(fallbackRoomId) || null : null);
+    if (!room) {
+      respond({ ok: false, message: "Комната не найдена. Обновите страницу." });
+      return;
+    }
+
+    if (room.phase !== "running" || !room.startedAt) {
+      respond({ ok: false, message: "Сойти можно только во время гонки." });
+      return;
+    }
+
+    let player = getPlayerForSocket(socket, room);
+    if (!player) {
+      const fallbackPlayerId = normalizePlayerKey(payload.playerId);
+      if (fallbackPlayerId) {
+        player = room.players.get(fallbackPlayerId) || null;
+      }
+    }
+    if (!player) {
+      respond({ ok: false, message: "Игрок не найден в комнате. Обновите страницу." });
+      return;
+    }
+    if (socket.data.playerId && player.id !== socket.data.playerId) {
+      respond({ ok: false, message: "Игрок не совпадает с текущей сессией." });
+      return;
+    }
+    if (player.observer) {
+      respond({ ok: false, message: "Наблюдатель не участвует в дистанции." });
+      return;
+    }
+    if (player.finishedMs !== null || player.withdrawn) {
+      respond({ ok: true, phase: room.phase });
+      return;
+    }
+
+    player.withdrawn = true;
+    player.withdrawnAt = Math.max(0, Date.now() - room.startedAt);
+    player.finishRank = 1 + [...room.players.values()].filter((entry) => entry.finishRank !== null).length;
+
+    const connectedPlayers = [...room.players.values()].filter((entry) => entry.connected && !entry.observer);
+    if (connectedPlayers.length <= 1) {
+      resetRoomToLobby(room);
+      broadcastRoom(room);
+      respond({ ok: true, phase: room.phase });
+      return;
+    }
+
+    if (allFinished(room)) {
+      if (allActiveWithdrawn(room)) {
+        resetRoomToLobby(room);
+      } else {
+        room.phase = "finished";
+      }
+    }
+
+    broadcastRoom(room);
+    respond({ ok: true, phase: room.phase });
   });
 
   socket.on("disconnect", () => {
@@ -618,8 +998,12 @@ io.on("connection", (socket) => {
     player.socketId = null;
     player.disconnectedAt = Date.now();
 
-    if (room.phase === "running" && allFinished(room)) {
-      room.phase = "finished";
+    if (room.phase === "running") {
+      if (!hasActiveRaceParticipants(room)) {
+        resetRoomToLobby(room);
+      } else if (allFinished(room)) {
+        room.phase = "finished";
+      }
     }
 
     scheduleDisconnectCleanup(room, player.id);
@@ -627,6 +1011,18 @@ io.on("connection", (socket) => {
     broadcastRoom(room);
   });
 });
+
+const countdownWatcher = setInterval(() => {
+  for (const room of rooms.values()) {
+    if (promoteCountdownIfDue(room)) {
+      broadcastRoom(room);
+    }
+  }
+}, 250);
+
+if (typeof countdownWatcher.unref === "function") {
+  countdownWatcher.unref();
+}
 
 server.listen(PORT, () => {
   const accessMsg = ACCESS_TOKEN ? "access token enabled" : "public mode";

@@ -130,6 +130,10 @@ h2 {
   background: linear-gradient(140deg, #355987, #5379aa);
 }
 
+.btn-danger {
+  background: linear-gradient(140deg, #a3272d, #d64b53);
+}
+
 .btn-small {
   padding: 7px 10px;
 }
@@ -147,10 +151,100 @@ h2 {
   min-width: 0;
 }
 
+.input-small {
+  width: 78px;
+  margin-bottom: 0;
+  padding: 6px 8px;
+  font-size: 14px;
+}
+
+.label-inline {
+  font-size: 13px;
+  color: var(--muted);
+}
+
 .checkbox {
   display: block;
   font-size: 14px;
   margin: 4px 0 8px;
+}
+
+.checkbox-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 13px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.checkbox-inline input {
+  margin: 0;
+}
+
+.observer-toggle {
+  margin: 2px 0 10px;
+}
+
+.results-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.results-head h2 {
+  margin: 14px 0 8px;
+}
+
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  user-select: none;
+}
+
+.switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.switch-slider {
+  width: 36px;
+  height: 20px;
+  border-radius: 999px;
+  background: #b7c7e4;
+  position: relative;
+  transition: background 0.2s ease;
+}
+
+.switch-slider::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease;
+}
+
+.switch input:checked + .switch-slider {
+  background: #2f67cb;
+}
+
+.switch input:checked + .switch-slider::after {
+  transform: translateX(16px);
+}
+
+.switch-label {
+  white-space: nowrap;
 }
 
 .timer {
@@ -227,6 +321,28 @@ h2 {
   min-height: 70vh;
 }
 
+.countdown-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(9, 17, 28, 0.28);
+  pointer-events: none;
+}
+
+.countdown-overlay.hidden {
+  display: none !important;
+}
+
+.countdown-value {
+  color: #ffffff;
+  font-size: clamp(68px, 14vw, 160px);
+  line-height: 1;
+  font-weight: 700;
+  text-shadow: 0 2px 14px rgba(0, 0, 0, 0.45);
+}
+
 canvas {
   display: block;
   margin: 0 auto;
@@ -247,6 +363,14 @@ canvas {
 
   .canvas-wrap {
     min-height: 62vh;
+  }
+
+  body.mobile-lobby .canvas-wrap {
+    pointer-events: none;
+  }
+
+  body.mobile-lobby canvas {
+    touch-action: auto;
   }
 
   body.mobile-running .layout {
@@ -296,10 +420,10 @@ canvas {
     display: block !important;
     position: fixed;
     top: 14px;
-    left: 50%;
-    transform: translateX(-50%);
-    text-align: center;
-    font-size: clamp(44px, 9vw, 64px);
+    left: 14px;
+    transform: none;
+    text-align: left;
+    font-size: clamp(40px, 8.2vw, 60px);
     line-height: 1;
     margin: 0;
     z-index: 30;
@@ -318,8 +442,25 @@ canvas {
     pointer-events: auto;
   }
 
-  body.mobile-running #raceButtonsRow .btn:not(#btnMap) {
+  body.mobile-running.mobile-countdown #raceButtonsRow {
     display: none !important;
+  }
+
+  body.mobile-running #raceButtonsRow .btn:not(#btnMap):not(#btnWithdraw) {
+    display: none !important;
+  }
+
+  body.mobile-running #btnWithdraw {
+    display: inline-block !important;
+    position: fixed;
+    top: 14px;
+    right: 14px;
+    margin: 0;
+    min-width: 82px;
+    padding: 9px 14px;
+    border-radius: 12px;
+    font-size: 18px;
+    z-index: 31;
   }
 
   body.mobile-running #btnMap {

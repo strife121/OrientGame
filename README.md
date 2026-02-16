@@ -21,6 +21,12 @@ npm run start
 
 Открой: `http://localhost:3000`
 
+## Онлайн версия
+
+- Сайт: `https://orientgame.onrender.com`
+- Access token: `Leader`
+- Прямая ссылка для входа: `https://orientgame.onrender.com/?access=Leader`
+
 ## Быстрый сценарий игры
 
 1. Первый игрок нажимает `Создать`.

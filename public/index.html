@@ -56,11 +56,27 @@
             </div>
           </div>
 
+          <label class="checkbox-inline observer-toggle" for="observerModeInput">
+            <input id="observerModeInput" type="checkbox" />
+            Режим наблюдателя
+          </label>
+
           <div id="raceButtonsRow" class="row row-tight">
             <button id="btnNewMap" class="btn btn-small">Новая карта</button>
             <button id="btnNewLeg" class="btn btn-small">Новая нога</button>
             <button id="btnStart" class="btn btn-small">Старт</button>
             <button id="btnMap" class="btn btn-small hidden">MAP</button>
+            <button id="btnWithdraw" class="btn btn-small btn-danger hidden">Сойти</button>
+          </div>
+
+          <div id="courseConfigRow" class="row row-tight">
+            <label class="label-inline" for="checkpointCountInput">КП</label>
+            <input id="checkpointCountInput" class="input input-small" type="number" min="1" max="10" value="3" />
+            <button id="saveCheckpointBtn" class="btn btn-small" type="button">Сохранить КП</button>
+            <label class="checkbox-inline" for="showPositionOnMapInput">
+              <input id="showPositionOnMapInput" type="checkbox" checked />
+              Показывать позицию на карте
+            </label>
           </div>
 
           <div id="timerBadge" class="timer">00:00.0</div>
@@ -71,13 +87,20 @@
           </div>
 
           <div id="resultsSection">
-            <h2>Результаты</h2>
+            <div class="results-head">
+              <h2>Результаты</h2>
+              <label class="switch">
+                <input id="showSplitsToggle" type="checkbox" />
+                <span class="switch-slider"></span>
+                <span class="switch-label">Сплиты</span>
+              </label>
+            </div>
             <table class="results">
               <thead>
                 <tr>
-                  <th>#</th>
-                  <th>Игрок</th>
-                  <th>Время</th>
+                  <th id="resultsCol1">#</th>
+                  <th id="resultsCol2">Игрок</th>
+                  <th id="resultsCol3">Время</th>
                 </tr>
               </thead>
               <tbody id="resultsBody"></tbody>
@@ -88,6 +111,9 @@
 
       <section id="canvasWrap" class="canvas-wrap">
         <canvas id="canvas"></canvas>
+        <div id="countdownOverlay" class="countdown-overlay hidden">
+          <span id="countdownValue" class="countdown-value">5</span>
+        </div>
       </section>
     </main>
 

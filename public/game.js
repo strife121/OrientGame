@@ -25,22 +25,35 @@
     roomColorHex: document.getElementById("roomColorHex"),
     roomProfileBox: document.getElementById("roomProfileBox"),
     raceButtonsRow: document.getElementById("raceButtonsRow"),
+    courseConfigRow: document.getElementById("courseConfigRow"),
+    checkpointCountInput: document.getElementById("checkpointCountInput"),
+    saveCheckpointBtn: document.getElementById("saveCheckpointBtn"),
+    showPositionOnMapInput: document.getElementById("showPositionOnMapInput"),
+    observerModeInput: document.getElementById("observerModeInput"),
     btnNewMap: document.getElementById("btnNewMap"),
     btnNewLeg: document.getElementById("btnNewLeg"),
     btnStart: document.getElementById("btnStart"),
     btnMap: document.getElementById("btnMap"),
+    btnWithdraw: document.getElementById("btnWithdraw"),
     playersSection: document.getElementById("playersSection"),
     resultsSection: document.getElementById("resultsSection"),
     playersList: document.getElementById("playersList"),
     resultsBody: document.getElementById("resultsBody"),
+    resultsCol1: document.getElementById("resultsCol1"),
+    resultsCol2: document.getElementById("resultsCol2"),
+    resultsCol3: document.getElementById("resultsCol3"),
+    showSplitsToggle: document.getElementById("showSplitsToggle"),
     timerBadge: document.getElementById("timerBadge"),
     canvasWrap: document.getElementById("canvasWrap"),
     canvas: document.getElementById("canvas"),
+    countdownOverlay: document.getElementById("countdownOverlay"),
+    countdownValue: document.getElementById("countdownValue"),
   };
 
   const state = {
     socket: null,
     connected: false,
+    joined: false,
     pendingRoomId: "",
     roomId: "",
     playerId: "",
@@ -51,14 +64,26 @@
     results: [],
     phase: "lobby",
     startedAt: null,
+    countdownEndsAt: null,
     mapSeed: null,
     legSeed: null,
+    checkpointCount: 3,
+    showPositionOnMap: true,
+    showSplits: false,
+    isObserver: false,
     serverOffsetMs: 0,
+    lastPhaseSyncAt: 0,
+    startFlashUntil: 0,
     localFinished: false,
+    localWithdrawn: false,
+    withdrawRequestPending: false,
     mapViewOpen: false,
     resumeProgress: null,
     mapViewSnapshot: null,
   };
+  state.showSplits = localStorage.getItem("orient_show_splits") === "1";
+  ui.showPositionOnMapInput.checked = state.showPositionOnMap;
+  ui.showSplitsToggle.checked = state.showSplits;
 
   const savedPlayerKey = normalizePlayerKey(localStorage.getItem("orient_player_key") || "");
   state.playerId = savedPlayerKey || generatePlayerKey();
@@ -106,12 +131,20 @@
     if (!canSendRoomEvent()) {
       return;
     }
+    if (!isLocalLeader()) {
+      setStatus("Только лидер комнаты управляет картой и дистанцией.");
+      return;
+    }
     clearLocalProgress(state.roomId);
     state.socket.emit("new_map");
   });
 
   ui.btnNewLeg.addEventListener("click", () => {
     if (!canSendRoomEvent()) {
+      return;
+    }
+    if (!isLocalLeader()) {
+      setStatus("Только лидер комнаты управляет картой и дистанцией.");
       return;
     }
     clearLocalProgress(state.roomId);
@@ -122,8 +155,38 @@
     if (!canSendRoomEvent()) {
       return;
     }
+    if (!isLocalLeader()) {
+      setStatus("Только лидер комнаты может запускать старт.");
+      return;
+    }
     clearLocalProgress(state.roomId);
     state.socket.emit("start_race");
+  });
+
+  ui.saveCheckpointBtn.addEventListener("click", () => {
+    applyCheckpointCount(true);
+  });
+
+  ui.checkpointCountInput.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") {
+      return;
+    }
+    event.preventDefault();
+    applyCheckpointCount(true);
+  });
+
+  ui.showPositionOnMapInput.addEventListener("change", () => {
+    applyShowPositionOnMap(true);
+  });
+
+  ui.observerModeInput.addEventListener("change", () => {
+    applyObserverMode(true);
+  });
+
+  ui.showSplitsToggle.addEventListener("change", () => {
+    state.showSplits = Boolean(ui.showSplitsToggle.checked);
+    localStorage.setItem("orient_show_splits", state.showSplits ? "1" : "0");
+    renderResults();
   });
 
   ui.btnMap.addEventListener("click", () => {
@@ -131,6 +194,66 @@
       return;
     }
     setMapViewOpen(!state.mapViewOpen);
+  });
+
+  ui.btnWithdraw.addEventListener("click", () => {
+    if (state.withdrawRequestPending) {
+      return;
+    }
+    if (!canSendRoomEvent()) {
+      setStatus("Нет соединения с сервером.");
+      return;
+    }
+    if (state.phase !== "running" || state.localFinished) {
+      setStatus("Сойти можно только во время активной гонки.");
+      return;
+    }
+    state.withdrawRequestPending = true;
+    renderUi();
+    setStatus("Фиксируем сход...");
+
+    let requestSettled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (requestSettled) {
+        return;
+      }
+      requestSettled = true;
+      state.withdrawRequestPending = false;
+      renderUi();
+      setStatus("Сервер не ответил. Попробуйте снова.");
+    }, 3500);
+
+    state.socket.emit(
+      "player_withdrawn",
+      {
+        roomId: state.roomId,
+        playerId: state.playerId,
+      },
+      (ack) => {
+      if (requestSettled) {
+        return;
+      }
+      requestSettled = true;
+      window.clearTimeout(timeoutId);
+      state.withdrawRequestPending = false;
+
+      if (ack && ack.ok) {
+        state.localWithdrawn = true;
+        state.localFinished = true;
+        mMoving = false;
+        clearLocalProgress(state.roomId);
+        renderUi();
+        if (ack.phase === "lobby") {
+          setStatus("Все участники сошли. Возврат в лобби.");
+        } else {
+          setStatus("Вы сошли с дистанции.");
+        }
+        return;
+      }
+      renderUi();
+      setStatus((ack && ack.message) || "Не удалось сойти с дистанции.");
+      }
+    );
   });
 
   ui.nameInput.addEventListener("change", () => {
@@ -173,6 +296,8 @@
   let mRouteNodes = [];
   let mSrcNode;
   let mDstNode;
+  let mCheckpointNodes = [];
+  let mNextCheckpointIdx = 0;
   let mDotNode;
   let mDotFrom;
   let mDotTo;
@@ -357,28 +482,156 @@
     drawCtx.restore();
   }
 
-  function DrawControl(drawCtx, x, y, ang) {
+  const COURSE_COLOR = "#DD1F26";
+  const COURSE_VISITED_COLOR = "rgba(221,31,38,0.65)";
+  const COURSE_HALO_COLOR = "rgba(221,31,38,0.28)";
+
+  function DrawLegacySquareControl(drawCtx, x, y, ang, size = 2, lineWidth = 0.25) {
     drawCtx.save();
     drawCtx.translate(x, y);
     drawCtx.rotate(ang);
-    let s = 2;
 
     drawCtx.fillStyle = "white";
-    drawCtx.fillRect(-s, -s, s * 2, s * 2);
+    drawCtx.fillRect(-size, -size, size * 2, size * 2);
 
     drawCtx.fillStyle = "rgb(255,128,0)";
     drawCtx.beginPath();
-    drawCtx.moveTo(s, s);
-    drawCtx.lineTo(-s, s);
-    drawCtx.lineTo(s, -s);
-    drawCtx.lineTo(s, s);
+    drawCtx.moveTo(size, size);
+    drawCtx.lineTo(-size, size);
+    drawCtx.lineTo(size, -size);
+    drawCtx.closePath();
     drawCtx.fill();
 
     drawCtx.strokeStyle = "black";
-    drawCtx.lineWidth = 0.25;
-    drawCtx.strokeRect(-s, -s, s * 2, s * 2);
-
+    drawCtx.lineWidth = lineWidth;
+    drawCtx.strokeRect(-size, -size, size * 2, size * 2);
     drawCtx.restore();
+  }
+
+  function DrawStartControl(drawCtx, node, nextNode) {
+    if (!node) {
+      return;
+    }
+    const x = node.center.x;
+    const y = node.center.y;
+
+    if (!mMenu) {
+      DrawLegacySquareControl(drawCtx, x, y, -mViewR, 2, 0.25);
+      return;
+    }
+
+    const size = mMenu ? 5.4 : 3.2;
+    const lineWidth = mMenu ? 1.3 : 0.5;
+    const angle = nextNode ? Math.atan2(nextNode.center.y - y, nextNode.center.x - x) : 0;
+
+    drawCtx.save();
+    drawCtx.translate(x, y);
+    drawCtx.rotate(angle);
+    drawCtx.beginPath();
+    drawCtx.moveTo(size, 0);
+    drawCtx.lineTo(-size * 0.72, size * 0.66);
+    drawCtx.lineTo(-size * 0.72, -size * 0.66);
+    drawCtx.closePath();
+    drawCtx.fillStyle = "rgba(221,31,38,0.08)";
+    drawCtx.fill();
+    drawCtx.strokeStyle = COURSE_COLOR;
+    drawCtx.lineWidth = lineWidth;
+    drawCtx.stroke();
+    drawCtx.restore();
+  }
+
+  function checkpointLabel(index) {
+    const n = index + 1;
+    return n === 10 ? "0" : String(n);
+  }
+
+  function DrawCheckpointControl(drawCtx, node, index, visited, current) {
+    if (!node) {
+      return;
+    }
+
+    const x = node.center.x;
+    const y = node.center.y;
+
+    if (!mMenu) {
+      if (current) {
+        drawCtx.save();
+        drawCtx.strokeStyle = COURSE_HALO_COLOR;
+        drawCtx.lineWidth = 0.7;
+        drawCtx.beginPath();
+        drawCtx.arc(x, y, 3.6, 0, Math.PI * 2, false);
+        drawCtx.stroke();
+        drawCtx.restore();
+      }
+
+      DrawLegacySquareControl(drawCtx, x, y, -mViewR, 2, 0.25);
+
+      drawCtx.save();
+      drawCtx.translate(x, y);
+      drawCtx.rotate(-mViewR);
+      drawCtx.fillStyle = visited ? "#0D8A3B" : "#112D67";
+      drawCtx.font = "3.1px Trebuchet MS, sans-serif";
+      drawCtx.textAlign = "left";
+      drawCtx.textBaseline = "middle";
+      drawCtx.fillText(checkpointLabel(index), 2.8, -2.4);
+      drawCtx.restore();
+      return;
+    }
+
+    if (current) {
+      drawCtx.save();
+      drawCtx.strokeStyle = COURSE_HALO_COLOR;
+      drawCtx.lineWidth = 1.6;
+      drawCtx.beginPath();
+      drawCtx.arc(x, y, 6.2, 0, Math.PI * 2, false);
+      drawCtx.stroke();
+      drawCtx.restore();
+    }
+
+    drawCtx.save();
+    drawCtx.beginPath();
+    drawCtx.arc(x, y, 4.6, 0, Math.PI * 2, false);
+    drawCtx.strokeStyle = visited ? COURSE_VISITED_COLOR : COURSE_COLOR;
+    drawCtx.lineWidth = 1.35;
+    drawCtx.stroke();
+    drawCtx.restore();
+
+    drawCtx.save();
+    drawCtx.fillStyle = visited ? COURSE_VISITED_COLOR : COURSE_COLOR;
+    drawCtx.strokeStyle = "rgba(255,255,255,0.92)";
+    drawCtx.lineWidth = 2.8;
+    drawCtx.font = "20px Trebuchet MS, sans-serif";
+    drawCtx.textAlign = "left";
+    drawCtx.textBaseline = "middle";
+    const label = checkpointLabel(index);
+    const tx = x + 9.5;
+    const ty = y - 8.2;
+    drawCtx.strokeText(label, tx, ty);
+    drawCtx.fillText(label, tx, ty);
+    drawCtx.restore();
+  }
+
+  function shouldDrawPlayerTrace() {
+    return state.isObserver || state.localFinished || state.phase === "finished";
+  }
+
+  function pickCheckpointNode(prevNode, usedNodes, minDistance) {
+    const candidates = [];
+    for (let i = 0; i < mMapNodes.length; i += 1) {
+      const node = mMapNodes[i];
+      if (!node || usedNodes.has(node)) {
+        continue;
+      }
+      if (vec2.sub(node.center, prevNode.center).length() < minDistance) {
+        continue;
+      }
+      candidates.push(node);
+    }
+
+    if (!candidates.length) {
+      return null;
+    }
+    return candidates[RandRangeI(0, candidates.length - 1)];
   }
 
   function MapNode(aPos) {
@@ -461,7 +714,7 @@
     };
 
     this.ClickArrows = function ClickArrows(aPos) {
-      if (mMoving || state.phase !== "running" || state.localFinished) {
+      if (mMoving || state.phase !== "running" || state.localFinished || state.isObserver) {
         return;
       }
       for (let a = 0; a < 4; a += 1) {
@@ -715,21 +968,45 @@
     });
   }
 
-  function InitCourse(seed) {
+  function InitCourse(seed, checkpointCount) {
     if (!mMapNodes.length) {
       return;
     }
 
+    const targetCount = clampInt(checkpointCount, 1, 10, 3);
+
     withSeed(seed, () => {
       mSrcNode = mMapNodes[RandRangeI(0, mMapNodes.length - 1)];
+      mCheckpointNodes = [];
 
-      let dist = 0;
-      let guard = 1000;
-      while (dist < 50 && guard > 0) {
-        mDstNode = mMapNodes[RandRangeI(0, mMapNodes.length - 1)];
-        dist = vec2.sub(mSrcNode.center, mDstNode.center).length();
-        guard -= 1;
+      const used = new Set();
+      used.add(mSrcNode);
+      let previous = mSrcNode;
+      for (let cp = 0; cp < targetCount; cp += 1) {
+        let node = pickCheckpointNode(previous, used, 55);
+        if (!node) {
+          node = pickCheckpointNode(previous, used, 44);
+        }
+        if (!node) {
+          node = pickCheckpointNode(previous, used, 30);
+        }
+        if (!node) {
+          node = pickCheckpointNode(previous, used, 0);
+        }
+        if (!node) {
+          break;
+        }
+
+        mCheckpointNodes.push(node);
+        used.add(node);
+        previous = node;
       }
+
+      if (!mCheckpointNodes.length) {
+        mCheckpointNodes.push(mSrcNode);
+      }
+
+      mDstNode = mCheckpointNodes[mCheckpointNodes.length - 1];
     });
 
     InitDot((seed || 1) + 1);
@@ -747,6 +1024,7 @@
       return;
     }
     mRouteNodes.length = 0;
+    mNextCheckpointIdx = 0;
 
     mDotNode = mSrcNode;
     mDotFrom = mDotNode.GetValidNeighborIdx(RandRangeI(1, 4));
@@ -786,7 +1064,7 @@
       mViewR = 0;
     } else {
       let dist = 0;
-      let allowMove = state.phase === "running" && !state.localFinished;
+      let allowMove = state.phase === "running" && !state.localFinished && !state.isObserver;
       while (allowMove && mMoving && dist < aDt * 35) {
         let lastDP = mDotPos.copy();
         mDotI += 0.05;
@@ -823,18 +1101,27 @@
       mDotPosyPID.Step(aDt, mDotPos.y - mViewPos.y);
       mViewPos.y += mDotPosyPID.GetValue();
 
-      if (state.phase === "running" && !state.localFinished && mDotNode === mDstNode && mDotI > 0.5) {
-        state.localFinished = true;
-        mMoving = false;
-        if (state.socket && state.connected) {
-          state.socket.emit("player_finished");
+      if (state.phase === "running" && !state.localFinished && mCheckpointNodes.length > 0 && mDotI > 0.5) {
+        const targetNode = mCheckpointNodes[Math.min(mNextCheckpointIdx, mCheckpointNodes.length - 1)];
+        if (targetNode && mDotNode === targetNode) {
+          mNextCheckpointIdx += 1;
+          if (state.socket && state.connected) {
+            state.socket.emit("player_split", { splitIndex: mNextCheckpointIdx });
+          }
+          if (mNextCheckpointIdx >= mCheckpointNodes.length) {
+            state.localFinished = true;
+            mMoving = false;
+            if (state.socket && state.connected) {
+              state.socket.emit("player_finished");
+            }
+          }
         }
       }
     }
   }
 
   function MouseDown(aX, aY) {
-    if (state.phase !== "running" || state.localFinished || !mDotNode) {
+    if (state.phase !== "running" || state.localFinished || state.isObserver || !mDotNode) {
       return;
     }
 
@@ -864,6 +1151,98 @@
     MouseDown(touch.clientX, touch.clientY);
   }
 
+  function getNodeByIndex(index) {
+    if (!Number.isInteger(index) || index < 0 || index >= mMapNodes.length) {
+      return null;
+    }
+    return mMapNodes[index] || null;
+  }
+
+  function drawProgressTrace(drawCtx, progress, color) {
+    if (!progress || !Array.isArray(progress.route) || progress.route.length === 0) {
+      return;
+    }
+    drawCtx.strokeStyle = hexToRgba(color, 0.5);
+    drawCtx.lineWidth = 5;
+    drawCtx.beginPath();
+
+    for (let i = 0; i < progress.route.length; i += 1) {
+      const segment = progress.route[i];
+      const node = getNodeByIndex(segment && segment.nodeIdx);
+      if (!node) {
+        continue;
+      }
+      if (!Number.isInteger(segment.from) || !Number.isInteger(segment.to)) {
+        continue;
+      }
+      const src = node.GetNeighborPos(segment.from, 0.5);
+      const dst = node.GetNeighborPos(segment.to, 0.5);
+      const c1 = vec2.interpolate(src, node.center, 0.7);
+      const c2 = vec2.interpolate(dst, node.center, 0.7);
+      drawCtx.moveTo(src.x, src.y);
+      drawCtx.bezierCurveTo(c1.x, c1.y, c2.x, c2.y, dst.x, dst.y);
+    }
+
+    drawCtx.stroke();
+  }
+
+  function getProgressDotPosition(progress) {
+    if (!progress || typeof progress !== "object") {
+      return null;
+    }
+    const node = getNodeByIndex(progress.dotNodeIdx);
+    if (!node) {
+      return null;
+    }
+    if (progress.atStart) {
+      return node.center.copy();
+    }
+    if (!Number.isInteger(progress.dotFrom) || !Number.isInteger(progress.dotTo)) {
+      return node.center.copy();
+    }
+
+    const dotI = Clamp(Number(progress.dotI), 0, 1);
+    const p1 = node.GetNeighborPos(progress.dotFrom, 0.5);
+    const p2 = node.GetNeighborPos(progress.dotTo, 0.5);
+    const c1 = vec2.interpolate(p1, node.center, 0.7);
+    const c2 = vec2.interpolate(p2, node.center, 0.7);
+    return vec2.bezier(p1, c1, c2, p2, dotI);
+  }
+
+  function drawObserverPlayers(drawCtx) {
+    if (!state.isObserver || !mMenu || !state.players.length) {
+      return;
+    }
+
+    for (const player of state.players) {
+      if (!player || player.observer) {
+        continue;
+      }
+      const color = normalizeHexColor(player.color) || "#8F1F1F";
+      const progress = player.progress;
+      let pos = null;
+      if (progress && progress.mapSeed === state.mapSeed && progress.legSeed === state.legSeed) {
+        drawProgressTrace(drawCtx, progress, color);
+        pos = getProgressDotPosition(progress);
+      } else if ((state.phase === "countdown" || state.phase === "running") && mSrcNode) {
+        pos = mSrcNode.center.copy();
+      }
+      if (!pos) {
+        continue;
+      }
+
+      drawCtx.fillStyle = color;
+      drawCtx.beginPath();
+      drawCtx.arc(pos.x, pos.y, 4.2, 0, Math.PI * 2, false);
+      drawCtx.fill();
+      drawCtx.strokeStyle = "rgba(0,0,0,0.85)";
+      drawCtx.lineWidth = 0.9;
+      drawCtx.beginPath();
+      drawCtx.arc(pos.x, pos.y, 4.2, 0, Math.PI * 2, false);
+      drawCtx.stroke();
+    }
+  }
+
   function DrawMap() {
     if (!mDotNode || !mSrcNode || !mDstNode) {
       return;
@@ -875,8 +1254,8 @@
     ctx.rotate(mViewR);
     ctx.translate(-mViewPos.x, -mViewPos.y);
 
-    if (mMenu) {
-      ctx.strokeStyle = "rgb(255,100,100)";
+    if (mMenu && shouldDrawPlayerTrace()) {
+      ctx.strokeStyle = hexToRgba(state.playerColor, 0.5);
       ctx.lineWidth = 8;
       ctx.beginPath();
       for (let a = 0; a < mRouteNodes.length; a += 1) {
@@ -884,6 +1263,7 @@
       }
       ctx.stroke();
     }
+    drawObserverPlayers(ctx);
 
     ctx.strokeStyle = mMenu ? "rgb(0,150,0)" : "rgb(255,255,255)";
     ctx.lineWidth = 3;
@@ -893,36 +1273,33 @@
     }
     ctx.stroke();
 
-    if (mMenu) {
-      ctx.strokeStyle = "rgba(255,0,255,0.5)";
-      ctx.lineWidth = 5;
+    if (mMenu && mCheckpointNodes.length > 0) {
+      ctx.strokeStyle = "rgba(221,31,38,0.9)";
+      ctx.lineWidth = 1.6;
       ctx.lineJoin = "round";
       ctx.beginPath();
-      let rad = 15;
-      ctx.arc(mDstNode.center.x, mDstNode.center.y, rad, 0, Math.PI * 2, false);
-      let dir = vec2.sub(mDstNode.center, mSrcNode.center);
-      dir.divideEquals(dir.length());
-      ctx.moveTo(mSrcNode.center.x + dir.x * rad, mSrcNode.center.y + dir.y * rad);
-      ctx.lineTo(
-        mSrcNode.center.x - dir.x * rad * 0.6 + dir.y * rad * 0.9,
-        mSrcNode.center.y - dir.y * rad * 0.6 - dir.x * rad * 0.9
-      );
-      ctx.lineTo(
-        mSrcNode.center.x - dir.x * rad * 0.6 - dir.y * rad * 0.9,
-        mSrcNode.center.y - dir.y * rad * 0.6 + dir.x * rad * 0.9
-      );
-      ctx.lineTo(mSrcNode.center.x + dir.x * rad, mSrcNode.center.y + dir.y * rad);
-      ctx.lineTo(mDstNode.center.x - dir.x * rad, mDstNode.center.y - dir.y * rad);
+      ctx.moveTo(mSrcNode.center.x, mSrcNode.center.y);
+      for (let i = 0; i < mCheckpointNodes.length; i += 1) {
+        ctx.lineTo(mCheckpointNodes[i].center.x, mCheckpointNodes[i].center.y);
+      }
       ctx.stroke();
       ctx.lineJoin = "miter";
     }
 
-    if (!mMenu) {
-      DrawControl(ctx, mSrcNode.center.x, mSrcNode.center.y, -mViewR);
-      DrawControl(ctx, mDstNode.center.x, mDstNode.center.y, -mViewR);
+    DrawStartControl(ctx, mSrcNode, mCheckpointNodes[0] || null);
+    for (let i = 0; i < mCheckpointNodes.length; i += 1) {
+      DrawCheckpointControl(
+        ctx,
+        mCheckpointNodes[i],
+        i,
+        i < mNextCheckpointIdx,
+        !state.localFinished && i === mNextCheckpointIdx
+      );
     }
 
-    if (!mAtStart || (state.phase === "running" && mMenu)) {
+    const showPlayerInRaceView = !mMenu && !mAtStart;
+    const showPlayerOnBigMap = mMenu && state.phase === "running" && !state.isObserver && state.showPositionOnMap;
+    if (showPlayerInRaceView || showPlayerOnBigMap) {
       let rad = mMenu ? 5 : 2;
       let dotX = mAtStart ? mDotNode.center.x : mDotPos.x;
       let dotY = mAtStart ? mDotNode.center.y : mDotPos.y;
@@ -1087,14 +1464,18 @@
     joinRoom(urlRoom);
   } else {
     BuildMap(150000001);
-    InitCourse(900000001);
+    InitCourse(900000001, state.checkpointCount);
     SetMenuVis(true);
     renderUi();
     setStatus("Создайте комнату или войдите в существующую");
   }
 
   function canSendRoomEvent() {
-    return Boolean(state.socket && state.connected && state.roomId);
+    return Boolean(state.socket && state.connected && state.joined && state.roomId);
+  }
+
+  function isLocalLeader() {
+    return Boolean(state.playerId && state.leaderId && state.playerId === state.leaderId);
   }
 
   function normalizeRoomId(roomId) {
@@ -1114,6 +1495,25 @@
       .slice(0, 24);
   }
 
+  function normalizeCheckpointCount(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      return state.checkpointCount || 3;
+    }
+    return Math.min(10, Math.max(1, Math.floor(n)));
+  }
+
+  function normalizeShowPositionOnMap(value) {
+    return value !== false;
+  }
+
+  function normalizeSplits(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    return value.map((ms) => (Number.isFinite(ms) ? ms : null));
+  }
+
   function normalizeHexColor(color) {
     const raw = (color || "").toString().trim();
     const match = raw.match(/^#?([0-9a-fA-F]{6})$/);
@@ -1121,6 +1521,18 @@
       return "";
     }
     return `#${match[1].toUpperCase()}`;
+  }
+
+  function hexToRgba(hex, alpha) {
+    const normalized = normalizeHexColor(hex);
+    const clampedAlpha = Math.min(1, Math.max(0, Number(alpha)));
+    if (!normalized) {
+      return `rgba(143,31,31,${clampedAlpha})`;
+    }
+    const r = Number.parseInt(normalized.slice(1, 3), 16);
+    const g = Number.parseInt(normalized.slice(3, 5), 16);
+    const b = Number.parseInt(normalized.slice(5, 7), 16);
+    return `rgba(${r},${g},${b},${clampedAlpha})`;
   }
 
   function generateRandomColor() {
@@ -1190,6 +1602,98 @@
     if (emitToServer && state.socket && state.connected && state.roomId) {
       state.socket.emit("update_color", { color });
     }
+  }
+
+  function applyCheckpointCount(emitToServer) {
+    const count = normalizeCheckpointCount(ui.checkpointCountInput.value);
+    ui.checkpointCountInput.value = String(count);
+    const previousCount = state.checkpointCount;
+
+    const canPreview = state.phase === "lobby" && mMapNodes.length > 0;
+    if (canPreview && count !== previousCount) {
+      state.checkpointCount = count;
+      InitCourse(state.legSeed || 1, state.checkpointCount);
+      SetMenuVis(true);
+      renderUi();
+    }
+
+    if (!emitToServer) {
+      state.checkpointCount = count;
+      return;
+    }
+
+    if (!canSendRoomEvent()) {
+      return;
+    }
+    if (!isLocalLeader()) {
+      setStatus("Только лидер комнаты может менять количество КП.");
+      return;
+    }
+    if (state.phase !== "lobby") {
+      setStatus("Количество КП можно менять только в лобби.");
+      return;
+    }
+    state.socket.emit("set_checkpoint_count", { count });
+  }
+
+  function applyShowPositionOnMap(emitToServer) {
+    const enabled = Boolean(ui.showPositionOnMapInput.checked);
+
+    if (!emitToServer) {
+      state.showPositionOnMap = enabled;
+      return;
+    }
+
+    if (!canSendRoomEvent()) {
+      ui.showPositionOnMapInput.checked = state.showPositionOnMap;
+      return;
+    }
+    if (!isLocalLeader()) {
+      ui.showPositionOnMapInput.checked = state.showPositionOnMap;
+      setStatus("Только лидер комнаты может управлять показом позиции.");
+      return;
+    }
+    if (state.phase !== "lobby") {
+      ui.showPositionOnMapInput.checked = state.showPositionOnMap;
+      setStatus("Показ позиции можно менять только в лобби.");
+      return;
+    }
+
+    state.showPositionOnMap = enabled;
+    renderUi();
+    state.socket.emit("set_show_position_on_map", { enabled });
+  }
+
+  function applyObserverMode(emitToServer) {
+    const enabled = Boolean(ui.observerModeInput.checked);
+
+    if (!emitToServer) {
+      state.isObserver = enabled;
+      return;
+    }
+
+    if (!canSendRoomEvent()) {
+      ui.observerModeInput.checked = state.isObserver;
+      return;
+    }
+
+    const raceActive = state.phase === "countdown" || state.phase === "running";
+    if (!enabled && raceActive) {
+      ui.observerModeInput.checked = true;
+      setStatus("Отключить режим наблюдателя можно после завершения гонки.");
+      return;
+    }
+
+    state.isObserver = enabled;
+    if (enabled) {
+      state.mapViewOpen = true;
+      state.mapViewSnapshot = null;
+      mMoving = false;
+      mCenterView = true;
+      SetMenuVis(true);
+    }
+    renderUi();
+    state.socket.emit("set_observer_mode", { enabled });
   }
 
   function generateRoomCode() {
@@ -1300,6 +1804,7 @@
       mapSeed: state.mapSeed,
       legSeed: state.legSeed,
       startedAt: state.startedAt,
+      checkpointIndex: mNextCheckpointIdx,
       dotNodeIdx,
       dotFrom: mDotFrom,
       dotTo: mDotTo,
@@ -1333,6 +1838,7 @@
     mDotFrom = clampInt(snapshot.dotFrom, 0, 3, 0);
     mDotTo = clampInt(snapshot.dotTo, 0, 3, 0);
     mDotI = clampNumber(snapshot.dotI, 0, 1, 0.5);
+    mNextCheckpointIdx = clampInt(snapshot.checkpointIndex, 0, mCheckpointNodes.length, 0);
     mAtStart = Boolean(snapshot.atStart);
     mMoving = false;
     mCenterView = true;
@@ -1365,7 +1871,7 @@
   }
 
   function maybePushProgress(force) {
-    if (state.phase !== "running" || !state.roomId || !state.startedAt || !mDotNode || state.localFinished) {
+    if (state.phase !== "running" || !state.roomId || !state.startedAt || !mDotNode || state.localFinished || state.isObserver) {
       return;
     }
 
@@ -1416,6 +1922,7 @@
 
     state.socket.on("connect", () => {
       state.connected = true;
+      state.joined = false;
       setStatus("Подключено к серверу");
       if (state.pendingRoomId) {
         emitJoin();
@@ -1425,12 +1932,19 @@
 
     state.socket.on("disconnect", () => {
       state.connected = false;
+      state.joined = false;
       setStatus("Соединение потеряно, пробуем восстановить...");
       renderUi();
     });
 
     state.socket.on("connect_error", (err) => {
       setStatus(`Ошибка соединения: ${err.message}`);
+    });
+
+    state.socket.on("room_action_denied", (message) => {
+      if (typeof message === "string" && message.trim()) {
+        setStatus(message);
+      }
     });
 
     state.socket.on("room_state", (payload) => {
@@ -1453,9 +1967,11 @@
       },
       (ack) => {
         if (!ack || !ack.ok) {
+          state.joined = false;
           setStatus("Не удалось войти в комнату");
           return;
         }
+        state.joined = true;
         state.playerId = normalizePlayerKey(ack.playerId || state.playerId);
         localStorage.setItem("orient_player_key", state.playerId);
         if (ack.color) {
@@ -1497,23 +2013,41 @@
     const previousPhase = state.phase;
     const previousMapSeed = state.mapSeed;
     const previousLegSeed = state.legSeed;
+    const previousCheckpointCount = state.checkpointCount;
 
     state.roomId = payload.roomId;
     state.pendingRoomId = payload.roomId;
+    state.joined = true;
     state.leaderId = payload.leaderId || "";
-    state.players = Array.isArray(payload.players) ? payload.players : [];
+    state.players = Array.isArray(payload.players)
+      ? payload.players.map((player) => ({
+          ...player,
+          observer: Boolean(player && player.observer),
+          splits: normalizeSplits(player && player.splits),
+          progress: player && player.progress && typeof player.progress === "object" ? player.progress : null,
+        }))
+      : [];
     state.results = Array.isArray(payload.results) ? payload.results : [];
     state.phase = payload.phase || "lobby";
     state.startedAt = typeof payload.startedAt === "number" ? payload.startedAt : null;
+    state.countdownEndsAt = typeof payload.countdownEndsAt === "number" ? payload.countdownEndsAt : null;
     state.mapSeed = typeof payload.mapSeed === "number" ? payload.mapSeed : null;
     state.legSeed = typeof payload.legSeed === "number" ? payload.legSeed : null;
+    state.checkpointCount = normalizeCheckpointCount(payload.checkpointCount);
+    state.showPositionOnMap = normalizeShowPositionOnMap(payload.showPositionOnMap);
+    ui.checkpointCountInput.value = String(state.checkpointCount);
+    ui.showPositionOnMapInput.checked = state.showPositionOnMap;
 
     if (typeof payload.serverNow === "number") {
       state.serverOffsetMs = payload.serverNow - Date.now();
     }
 
     const localPlayer = state.players.find((player) => player.id === state.playerId);
-    state.localFinished = Boolean(localPlayer && localPlayer.finishedMs !== null);
+    state.isObserver = Boolean(localPlayer && localPlayer.observer);
+    state.localWithdrawn = Boolean(localPlayer && localPlayer.withdrawn);
+    state.localFinished = Boolean(localPlayer && (localPlayer.finishedMs !== null || localPlayer.withdrawn));
+    state.withdrawRequestPending = false;
+    ui.observerModeInput.checked = state.isObserver;
     if (localPlayer) {
       if (localPlayer.name) {
         applyPlayerName(localPlayer.name, false);
@@ -1523,38 +2057,57 @@
       }
     }
 
-    const mapChanged = state.mapSeed !== previousMapSeed || state.legSeed !== previousLegSeed;
+    const mapChanged =
+      state.mapSeed !== previousMapSeed ||
+      state.legSeed !== previousLegSeed ||
+      state.checkpointCount !== previousCheckpointCount;
     if (mapChanged || mMapNodes.length === 0) {
       BuildMap(state.mapSeed || 1);
-      InitCourse(state.legSeed || 1);
+      InitCourse(state.legSeed || 1, state.checkpointCount);
       const hadPreviousSeeds = previousMapSeed !== null && previousLegSeed !== null;
       if (hadPreviousSeeds) {
         clearLocalProgress(state.roomId);
       }
     }
 
-    if (state.phase === "running" && previousPhase !== "running") {
-      state.mapViewOpen = false;
+    const currentRaceActive = state.phase === "countdown" || state.phase === "running";
+    const previousRaceActive = previousPhase === "countdown" || previousPhase === "running";
+
+    if (currentRaceActive && !previousRaceActive) {
       state.mapViewSnapshot = null;
       let restored = false;
-      if (state.resumeProgress) {
-        restored = applyProgressSnapshot(state.resumeProgress);
-      }
-      if (!restored) {
-        restored = applyProgressSnapshot(loadLocalProgress(state.roomId));
+      if (!state.isObserver && state.phase === "running") {
+        if (state.resumeProgress) {
+          restored = applyProgressSnapshot(state.resumeProgress);
+        }
+        if (!restored) {
+          restored = applyProgressSnapshot(loadLocalProgress(state.roomId));
+        }
       }
       if (!restored) {
         InitDot((state.legSeed || 1) + 1);
       }
-      MoveViewToDot();
-      mViewR = 0;
-      mDotAng = 0;
-      SetMenuVis(false);
+      if (state.isObserver) {
+        state.mapViewOpen = true;
+        mMoving = false;
+        mCenterView = true;
+        SetMenuVis(true);
+      } else {
+        state.mapViewOpen = false;
+        MoveViewToDot();
+        mViewR = 0;
+        mDotAng = 0;
+        SetMenuVis(false);
+      }
       mLastProgressPushAt = 0;
       state.resumeProgress = null;
     }
 
-    if (state.phase !== "running" && previousPhase === "running") {
+    if (previousPhase === "countdown" && state.phase === "running") {
+      state.startFlashUntil = getSyncedNow() + 900;
+    }
+
+    if (!currentRaceActive && previousRaceActive) {
       state.mapViewOpen = false;
       state.mapViewSnapshot = null;
       mMoving = false;
@@ -1562,11 +2115,20 @@
       SetMenuVis(true);
       clearLocalProgress(state.roomId);
       state.resumeProgress = null;
+      state.startFlashUntil = 0;
     }
 
-    if (state.phase !== "running" && previousPhase !== "running") {
+    if (!currentRaceActive && !previousRaceActive) {
       state.mapViewOpen = false;
       state.mapViewSnapshot = null;
+      SetMenuVis(true);
+    }
+
+    if (currentRaceActive && state.isObserver) {
+      state.mapViewOpen = true;
+      state.mapViewSnapshot = null;
+      mMoving = false;
+      mCenterView = true;
       SetMenuVis(true);
     }
 
@@ -1579,24 +2141,33 @@
 
   function renderUi() {
     const inRoom = Boolean(state.roomId);
+    const countdown = state.phase === "countdown";
     const running = state.phase === "running";
     const finished = state.phase === "finished";
+    const raceActive = countdown || running;
+    const leader = isLocalLeader();
     const mobile = window.matchMedia("(max-width: 940px)").matches;
-    const mobileRunning = mobile && running;
+    const mobileRunning = mobile && raceActive && !state.isObserver;
+    const mobileLobby = mobile && inRoom && state.phase === "lobby";
 
     ui.joinPanel.classList.toggle("hidden", inRoom);
     ui.roomPanel.classList.toggle("hidden", !inRoom);
     ui.roomCode.textContent = state.roomId || "-";
     document.body.classList.toggle("mobile-running", mobileRunning);
+    document.body.classList.toggle("mobile-lobby", mobileLobby);
+    document.body.classList.toggle("mobile-countdown", mobile && countdown);
     ui.roomProfileBox.classList.toggle("hidden", !inRoom || state.phase !== "lobby");
     ui.playersSection.classList.toggle("hidden", mobileRunning);
     ui.resultsSection.classList.toggle("hidden", mobileRunning);
     if (mobile && finished) {
       ui.resultsSection.classList.remove("hidden");
     }
+    ui.countdownOverlay.classList.toggle("hidden", !countdown);
 
     let phaseText = "Лобби";
-    if (running) {
+    if (countdown) {
+      phaseText = "Подготовка к старту";
+    } else if (running) {
       phaseText = "Гонка идет";
     } else if (finished) {
       phaseText = "Гонка завершена";
@@ -1605,16 +2176,30 @@
     ui.status.textContent = inRoom ? `${phaseText}. Игроков: ${playerCount}` : ui.status.textContent;
 
     const disabled = !state.connected || !inRoom;
-    ui.btnStart.disabled = disabled || state.phase === "running";
-    ui.btnNewMap.disabled = disabled || state.phase === "running";
-    ui.btnNewLeg.disabled = disabled || state.phase === "running";
-    ui.btnMap.disabled = disabled || state.phase !== "running";
+    const canWithdraw = running && !state.localFinished && !state.isObserver;
+    ui.btnStart.disabled = disabled || !leader || raceActive;
+    ui.btnNewMap.disabled = disabled || !leader || raceActive;
+    ui.btnNewLeg.disabled = disabled || !leader || raceActive;
+    ui.btnMap.disabled = disabled || state.phase !== "running" || state.isObserver;
+    ui.btnWithdraw.disabled = disabled || !canWithdraw || state.withdrawRequestPending;
+    ui.checkpointCountInput.disabled = disabled || !leader || state.phase !== "lobby";
+    ui.saveCheckpointBtn.disabled = disabled || !leader || state.phase !== "lobby";
+    ui.showPositionOnMapInput.disabled = disabled || !leader || state.phase !== "lobby";
+    ui.observerModeInput.disabled = disabled;
 
-    ui.btnNewMap.classList.toggle("hidden", running);
-    ui.btnNewLeg.classList.toggle("hidden", running);
-    ui.btnStart.classList.toggle("hidden", running);
-    ui.btnMap.classList.toggle("hidden", !running);
+    ui.btnNewMap.classList.toggle("hidden", !leader || raceActive);
+    ui.btnNewLeg.classList.toggle("hidden", !leader || raceActive);
+    ui.btnStart.classList.toggle("hidden", !leader || raceActive);
+    ui.btnMap.classList.toggle("hidden", !running || state.isObserver);
+    ui.btnWithdraw.classList.toggle("hidden", !running || state.localFinished || state.isObserver);
+    ui.btnWithdraw.textContent = state.withdrawRequestPending ? "Сходим..." : "Сойти";
     ui.btnMap.textContent = state.mapViewOpen ? "BACK" : "MAP";
+    ui.raceButtonsRow.classList.toggle("hidden", countdown || (!leader && !running) || (state.isObserver && running));
+    ui.courseConfigRow.classList.toggle("hidden", !leader || state.phase !== "lobby");
+    ui.checkpointCountInput.value = String(state.checkpointCount);
+    ui.showPositionOnMapInput.checked = state.showPositionOnMap;
+    ui.observerModeInput.checked = state.isObserver;
+    ui.showSplitsToggle.checked = state.showSplits;
 
     renderPlayers();
     renderResults();
@@ -1629,11 +2214,15 @@
       if (player.id === state.leaderId) {
         parts.push("(leader)");
       }
-      if (player.finishedMs !== null) {
+      if (player.observer) {
+        parts.push("- наблюдатель");
+      } else if (player.withdrawn) {
+        parts.push("- сошел");
+      } else if (player.finishedMs !== null) {
         parts.push(`- финиш ${formatMs(player.finishedMs)}`);
       } else if (player.connected === false) {
         parts.push("- переподключение...");
-      } else if (state.phase === "running") {
+      } else if (state.phase === "running" || state.phase === "countdown") {
         parts.push("- на дистанции");
       } else {
         parts.push("- ожидание");
@@ -1658,11 +2247,20 @@
   function renderResults() {
     ui.resultsBody.innerHTML = "";
 
+    if (state.showSplits) {
+      renderSplitResults();
+      return;
+    }
+
+    ui.resultsCol1.textContent = "#";
+    ui.resultsCol2.textContent = "Игрок";
+    ui.resultsCol3.textContent = "Время";
+
     if (!state.results.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
       td.colSpan = 3;
-      td.textContent = "Пока нет финишировавших";
+      td.textContent = "Пока нет результатов";
       tr.appendChild(td);
       ui.resultsBody.appendChild(tr);
       return;
@@ -1690,7 +2288,7 @@
       name.appendChild(nameWrap);
 
       const time = document.createElement("td");
-      time.textContent = formatMs(result.finishedMs);
+      time.textContent = result.status === "withdrawn" || result.finishedMs === null ? "сошел" : formatMs(result.finishedMs);
 
       tr.appendChild(rank);
       tr.appendChild(name);
@@ -1699,19 +2297,218 @@
     }
   }
 
+  function splitStanding(cpIndex, localTime) {
+    const times = [];
+    for (const player of state.players) {
+      if (!player || player.observer) {
+        continue;
+      }
+      const splits = normalizeSplits(player.splits);
+      const value = splits[cpIndex];
+      if (Number.isFinite(value)) {
+        times.push(value);
+      }
+    }
+    if (!Number.isFinite(localTime) || !times.length) {
+      return null;
+    }
+    times.sort((a, b) => a - b);
+    const place = times.findIndex((value) => value >= localTime) + 1;
+    return {
+      place: place > 0 ? place : times.length,
+      total: times.length,
+    };
+  }
+
+  function renderSplitResults() {
+    const localPlayer = state.players.find((player) => player.id === state.playerId);
+    if (!localPlayer) {
+      ui.resultsCol1.textContent = "КП";
+      ui.resultsCol2.textContent = "Место";
+      ui.resultsCol3.textContent = "Время";
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.textContent = "Нет данных игрока в комнате";
+      tr.appendChild(td);
+      ui.resultsBody.appendChild(tr);
+      return;
+    }
+
+    if (localPlayer.observer) {
+      renderObserverSplitResults();
+      return;
+    }
+
+    ui.resultsCol1.textContent = "КП";
+    ui.resultsCol2.textContent = "Место";
+    ui.resultsCol3.textContent = "Время";
+
+    const localSplits = normalizeSplits(localPlayer.splits);
+    const checkpointTotal = Math.max(1, state.checkpointCount);
+    let hasValues = false;
+
+    for (let cp = 1; cp <= checkpointTotal; cp += 1) {
+      const cpIndex = cp - 1;
+      const splitTime = localSplits[cpIndex];
+      if (Number.isFinite(splitTime)) {
+        hasValues = true;
+      }
+      const standing = splitStanding(cpIndex, splitTime);
+
+      const tr = document.createElement("tr");
+      const cpCell = document.createElement("td");
+      cpCell.textContent = String(cp);
+
+      const placeCell = document.createElement("td");
+      placeCell.textContent = standing ? `${standing.place}/${standing.total}` : "-";
+
+      const timeCell = document.createElement("td");
+      timeCell.textContent = Number.isFinite(splitTime) ? formatMs(splitTime) : "-";
+
+      tr.appendChild(cpCell);
+      tr.appendChild(placeCell);
+      tr.appendChild(timeCell);
+      ui.resultsBody.appendChild(tr);
+    }
+
+    if (!hasValues) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.textContent = state.phase === "lobby" ? "Стартуйте гонку, чтобы увидеть сплиты" : "Пока нет взятых КП";
+      tr.appendChild(td);
+      ui.resultsBody.appendChild(tr);
+    }
+  }
+
+  function renderObserverSplitResults() {
+    ui.resultsCol1.textContent = "КП";
+    ui.resultsCol2.textContent = "Игрок";
+    ui.resultsCol3.textContent = "Время";
+
+    const splitRows = [];
+    for (const player of state.players) {
+      if (!player || player.observer) {
+        continue;
+      }
+      const splits = normalizeSplits(player.splits);
+      for (let cpIndex = 0; cpIndex < splits.length; cpIndex += 1) {
+        const splitTime = splits[cpIndex];
+        if (!Number.isFinite(splitTime)) {
+          continue;
+        }
+        splitRows.push({
+          cp: cpIndex + 1,
+          time: splitTime,
+          playerName: player.name,
+          playerColor: normalizeHexColor(player.color) || "#8F1F1F",
+        });
+      }
+    }
+
+    if (!splitRows.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 3;
+      td.textContent = state.phase === "lobby" ? "Стартуйте гонку, чтобы увидеть сплиты" : "Пока нет взятых КП";
+      tr.appendChild(td);
+      ui.resultsBody.appendChild(tr);
+      return;
+    }
+
+    splitRows.sort((a, b) => (a.cp !== b.cp ? a.cp - b.cp : a.time - b.time));
+    const splitCounts = new Map();
+    for (const row of splitRows) {
+      splitCounts.set(row.cp, (splitCounts.get(row.cp) || 0) + 1);
+    }
+
+    let prevCp = -1;
+    let place = 0;
+    for (const row of splitRows) {
+      if (row.cp !== prevCp) {
+        prevCp = row.cp;
+        place = 1;
+      } else {
+        place += 1;
+      }
+
+      const tr = document.createElement("tr");
+      const cpCell = document.createElement("td");
+      cpCell.textContent = String(row.cp);
+
+      const nameCell = document.createElement("td");
+      const nameWrap = document.createElement("span");
+      nameWrap.className = "result-name";
+
+      const swatch = document.createElement("span");
+      swatch.className = "player-color";
+      swatch.style.backgroundColor = row.playerColor;
+
+      const label = document.createElement("span");
+      label.textContent = `${row.playerName} (${place}/${splitCounts.get(row.cp) || 1})`;
+
+      nameWrap.appendChild(swatch);
+      nameWrap.appendChild(label);
+      nameCell.appendChild(nameWrap);
+
+      const timeCell = document.createElement("td");
+      timeCell.textContent = formatMs(row.time);
+
+      tr.appendChild(cpCell);
+      tr.appendChild(nameCell);
+      tr.appendChild(timeCell);
+      ui.resultsBody.appendChild(tr);
+    }
+  }
+
   function getSyncedNow() {
     return Date.now() + state.serverOffsetMs;
   }
 
+  function refreshCountdownOverlay() {
+    if (state.phase !== "countdown" || !state.startedAt) {
+      if (state.phase === "running" && state.startFlashUntil > getSyncedNow()) {
+        ui.countdownValue.textContent = "СТАРТ";
+        ui.countdownOverlay.classList.remove("hidden");
+      } else {
+        ui.countdownOverlay.classList.add("hidden");
+      }
+      return;
+    }
+
+    const msLeft = Math.max(0, state.startedAt - getSyncedNow());
+    if (msLeft <= 0) {
+      ui.countdownValue.textContent = "СТАРТ";
+      ui.countdownOverlay.classList.remove("hidden");
+      const now = performance.now();
+      if (canSendRoomEvent() && now - state.lastPhaseSyncAt > 500) {
+        state.lastPhaseSyncAt = now;
+        state.socket.emit("sync_phase");
+      }
+      return;
+    }
+
+    const secondsLeft = Math.min(5, Math.max(1, Math.ceil(msLeft / 1000)));
+    ui.countdownValue.textContent = String(secondsLeft);
+    ui.countdownOverlay.classList.remove("hidden");
+  }
+
   function refreshTimer() {
+    refreshCountdownOverlay();
+
     if (state.phase === "running" && state.startedAt) {
       ui.timerBadge.textContent = formatMs(Math.max(0, getSyncedNow() - state.startedAt));
       return;
     }
 
     if (state.phase === "finished" && state.results.length > 0) {
-      const maxTime = Math.max(...state.results.map((entry) => entry.finishedMs));
-      ui.timerBadge.textContent = formatMs(maxTime);
+      const finishTimes = state.results.map((entry) => entry.finishedMs).filter((value) => Number.isFinite(value));
+      if (finishTimes.length > 0) {
+        ui.timerBadge.textContent = formatMs(Math.max(...finishTimes));
+      } else {
+        ui.timerBadge.textContent = "00:00.0";
+      }
       return;
     }
 
