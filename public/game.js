@@ -3,7 +3,6 @@
 
 (() => {
   const queryParams = new URLSearchParams(window.location.search);
-  const accessToken = queryParams.get("access") || "";
 
   const ui = {
     status: document.getElementById("status"),
@@ -2027,18 +2026,12 @@
   function buildInviteLink(roomId) {
     const url = new URL(window.location.href);
     url.searchParams.set("room", roomId);
-    if (accessToken) {
-      url.searchParams.set("access", accessToken);
-    }
     return url.toString();
   }
 
   function updateUrl(roomId) {
     const url = new URL(window.location.href);
     url.searchParams.set("room", roomId);
-    if (accessToken) {
-      url.searchParams.set("access", accessToken);
-    }
     window.history.replaceState({}, "", url.toString());
   }
 
@@ -2047,8 +2040,7 @@
       return;
     }
 
-    const auth = accessToken ? { access: accessToken } : {};
-    state.socket = io({ auth });
+    state.socket = io();
 
     state.socket.on("connect", () => {
       state.connected = true;

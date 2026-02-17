@@ -5,8 +5,6 @@ const express = require("express");
 const { Server } = require("socket.io");
 
 const PORT = Number(process.env.PORT || 3000);
-const ACCESS_TOKEN = process.env.ACCESS_TOKEN || "";
-const ACCESS_COOKIE = "orient_access";
 const DISCONNECT_GRACE_MS = Number(process.env.DISCONNECT_GRACE_MS || 180000);
 const COUNTDOWN_SECONDS = 5;
 const COUNTDOWN_MS = COUNTDOWN_SECONDS * 1000;
@@ -20,28 +18,6 @@ const io = new Server(server);
 
 const rooms = new Map();
 const disconnectTimers = new Map();
-
-function parseCookies(cookieHeader = "") {
-  return cookieHeader
-    .split(";")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .reduce((acc, part) => {
-      const idx = part.indexOf("=");
-      if (idx <= 0) {
-        return acc;
-      }
-      const key = part.slice(0, idx);
-      let val = part.slice(idx + 1);
-      try {
-        val = decodeURIComponent(val);
-      } catch {
-        // Keep raw value when URI decoding fails.
-      }
-      acc[key] = val;
-      return acc;
-    }, {});
-}
 
 function sanitizeName(name) {
   const raw = (name || "").toString().trim().replace(/\s+/g, " ");
@@ -564,44 +540,7 @@ app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-if (ACCESS_TOKEN) {
-  app.use((req, res, next) => {
-    const queryToken = typeof req.query.access === "string" ? req.query.access : "";
-    const cookieToken = parseCookies(req.headers.cookie)[ACCESS_COOKIE] || "";
-
-    if (queryToken && queryToken === ACCESS_TOKEN) {
-      res.setHeader(
-        "Set-Cookie",
-        `${ACCESS_COOKIE}=${encodeURIComponent(ACCESS_TOKEN)}; Path=/; HttpOnly; SameSite=Lax`
-      );
-      return next();
-    }
-
-    if (cookieToken === ACCESS_TOKEN) {
-      return next();
-    }
-
-    res.status(401).send("Unauthorized. Use invite link with ?access=TOKEN.");
-  });
-}
-
 app.use(express.static(path.join(__dirname, "public"), { index: "index.html" }));
-
-io.use((socket, next) => {
-  if (!ACCESS_TOKEN) {
-    return next();
-  }
-
-  const authToken = typeof socket.handshake.auth?.access === "string" ? socket.handshake.auth.access : "";
-  const queryToken = typeof socket.handshake.query?.access === "string" ? socket.handshake.query.access : "";
-  const cookieToken = parseCookies(socket.handshake.headers.cookie)[ACCESS_COOKIE] || "";
-
-  if (authToken === ACCESS_TOKEN || queryToken === ACCESS_TOKEN || cookieToken === ACCESS_TOKEN) {
-    return next();
-  }
-
-  return next(new Error("unauthorized"));
-});
 
 io.on("connection", (socket) => {
   socket.on("join_room", (payload, ack) => {
@@ -1025,6 +964,5 @@ if (typeof countdownWatcher.unref === "function") {
 }
 
 server.listen(PORT, () => {
-  const accessMsg = ACCESS_TOKEN ? "access token enabled" : "public mode";
-  console.log(`Ski-O multiplayer listening on http://localhost:${PORT} (${accessMsg})`);
+  console.log(`Ski-O multiplayer listening on http://localhost:${PORT}`);
 });

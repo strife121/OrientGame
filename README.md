@@ -24,8 +24,7 @@ npm run start
 ## Онлайн версия
 
 - Сайт: `https://orientgame.onrender.com`
-- Access token: `Leader`
-- Прямая ссылка для входа: `https://orientgame.onrender.com/?access=Leader`
+- Прямая ссылка для входа: `https://orientgame.onrender.com`
 
 ## Быстрый сценарий игры
 
@@ -38,21 +37,7 @@ npm run start
 
 ## Как закрыть игру от случайных посетителей и роботов
 
-### 1) Секретный токен в ссылке
-
-Сервер поддерживает переменную окружения `ACCESS_TOKEN`.
-
-```bash
-ACCESS_TOKEN=mysecret npm run start
-```
-
-Теперь сайт откроется только по ссылке вида:
-
-`https://your-domain.com/?access=mysecret`
-
-Без токена будет `401 Unauthorized`.
-
-### 2) Защита от индексации
+### Защита от индексации
 
 В проекте уже есть:
 
@@ -74,7 +59,6 @@ ACCESS_TOKEN=mysecret npm run start
 Главное:
 
 - задать `PORT` (если требует провайдер);
-- задать `ACCESS_TOKEN` для приватной ссылки;
 - использовать HTTPS в проде.
 
 ### Деплой через Blueprint (`render.yaml`)
@@ -84,7 +68,6 @@ ACCESS_TOKEN=mysecret npm run start
 1. В Render нажми `New +` -> `Blueprint`.
 2. Выбери репозиторий `strife121/OrientGame`.
 3. Подтверди создание сервиса.
-4. После создания в переменных окружения задай `ACCESS_TOKEN` (секрет для приватной ссылки).
 
 ### Полезные официальные ссылки
 
